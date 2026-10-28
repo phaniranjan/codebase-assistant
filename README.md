@@ -70,14 +70,14 @@ flowchart TD
 | **Markdown & Config Parsers** | ✅ Implemented | Heading-based markdown sectioning and config/manifest block parsing. |
 | **Logical Chunker** | ✅ Implemented | Enclosing symbol scope preservation, line numbers, deterministic IDs, oversized chunk sub-splitting. |
 | **Incremental Indexer** | ✅ Implemented | SHA-256 change detection, stale chunk eviction for modified/deleted/renamed files, repo identity checks. |
-| **Local Cache Storage** | ✅ Implemented | Local `.codebase_assistant/` manifest and chunks storage. |
-| **CLI (`scan`, `index`, `inspect-chunks`)** | ✅ Implemented | Terminal commands for repository inspection and indexing. |
-| **Embeddings & FAISS Vector Store** | ⏳ Planned (Phase 3) | Dense embedding generation and local vector similarity search. |
-| **BM25 & Hybrid Retriever** | ⏳ Planned (Phase 3) | Exact identifier lookup and Reciprocal Rank Fusion (RRF). |
-| **Gemini Integration & Q&A Agent** | ⏳ Planned (Phase 4) | Grounded prompt building and citation-backed repository question answering. |
-| **Code & Test Proposals** | ⏳ Planned (Phase 5) | Unified git diff generation and pytest test generation. |
-| **Controlled Tools & Execution Sandbox** | ⏳ Planned (Phase 6) | Policy engine, permissions, and isolated command execution. |
-| **Evaluation Suite & Benchmarks** | ⏳ Planned (Phase 7) | Golden dataset benchmarks for retrieval and groundedness. |
+| **Local Cache Storage** | ✅ Implemented | Local `.codebase_assistant/` manifest, chunks, and vector store. |
+| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, and hybrid search. |
+| **Embeddings & Vector Store** | ✅ Implemented | Pluggable providers (Gemini & deterministic mock), local cosine vector store. |
+| **BM25 & Hybrid Retriever** | ✅ Implemented | CodeTokenizer, Okapi BM25 keyword search, Reciprocal Rank Fusion (RRF), context assembler. |
+| **Gemini Integration & Q&A Agent** | ⏳ Planned (Phase 3) | Grounded prompt building and citation-backed repository question answering. |
+| **Code & Test Proposals** | ⏳ Planned (Phase 4) | Unified git diff generation and pytest test generation. |
+| **Controlled Tools & Execution Sandbox** | ⏳ Planned (Phase 5) | Policy engine, permissions, and isolated command execution. |
+| **Evaluation Suite & Benchmarks** | ⏳ Planned (Phase 6) | Golden dataset benchmarks for retrieval and groundedness. |
 
 ---
 
@@ -143,6 +143,27 @@ python -m codebase_assistant.cli inspect-chunks --file rag_pipeline.py --limit 1
 Filter by symbol name:
 ```bash
 python -m codebase_assistant.cli inspect-chunks --symbol BM25Retriever
+```
+
+### 4. Generate Embeddings
+Compute and synchronize vector embeddings for all indexed chunks:
+```bash
+# Using Google Gemini embeddings (requires GEMINI_API_KEY)
+python -m codebase_assistant.cli embed /path/to/repository --provider gemini
+
+# Or using deterministic mock embeddings (offline, zero API keys)
+python -m codebase_assistant.cli embed /path/to/repository --provider mock
+```
+
+### 5. Hybrid Search
+Retrieve code chunks using dense vector similarity, sparse BM25, or hybrid Reciprocal Rank Fusion (RRF):
+```bash
+# Hybrid search (combines vector + BM25)
+python -m codebase_assistant.cli search "BM25Retriever implementation" /path/to/repository --mode hybrid
+
+# Dense-only or sparse-only search
+python -m codebase_assistant.cli search "calculate IDF scores" /path/to/repository --mode dense_only
+python -m codebase_assistant.cli search "class RAGPipeline" /path/to/repository --mode sparse_only --top-k 5
 ```
 
 ---

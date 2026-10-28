@@ -21,8 +21,14 @@ except ImportError:
     rich_available = False
     console = None
 
+from codebase_assistant.config import get_settings
+from codebase_assistant.embeddings.gemini import GeminiEmbeddingProvider
+from codebase_assistant.embeddings.manager import EmbeddingManager
+from codebase_assistant.embeddings.mock import MockEmbeddingProvider
 from codebase_assistant.ingestion.indexer import IncrementalIndexer
 from codebase_assistant.ingestion.scanner import RepositoryScanner
+from codebase_assistant.retrieval.context_assembler import ContextAssembler
+from codebase_assistant.retrieval.hybrid import HybridRetriever
 
 
 def print_info(title: str, value: str = ""):
@@ -149,6 +155,165 @@ def inspect_chunks(cache_dir: str | None, file_filter: str | None, symbol_filter
     for c in filtered[:limit]:
         symbol_str = f" ({c.symbol_name})" if c.symbol_name else ""
         print(f"  [{c.chunk_type.value.upper():12}]{symbol_str} {c.file_path}:{c.start_line}-{c.end_line} [hash: {c.content_hash[:8]}]")
+
+
+@main.command(name="embed")
+@click.argument("repo_path", default=".", type=click.Path(exists=True))
+@click.option(
+    "--provider",
+    "provider_type",
+    default="gemini",
+    type=click.Choice(["gemini", "mock"], case_sensitive=False),
+    help="Embedding provider ('gemini' or 'mock').",
+)
+@click.option("--rebuild", is_flag=True, help="Recompute all embeddings from scratch.")
+@click.option("--cache-dir", default=None, help="Custom cache directory.")
+def embed(repo_path: str, provider_type: str, rebuild: bool, cache_dir: str | None):
+    """Generate and synchronize vector embeddings for indexed repository chunks."""
+    target_repo = Path(repo_path).resolve()
+    print_info("Target Repository", str(target_repo))
+    print_info("Embedding Provider", provider_type.lower())
+
+    cache = Path(cache_dir).resolve() if cache_dir else target_repo / get_settings().cache_dir
+    print_info("Cache Directory", str(cache))
+
+    if provider_type.lower() == "mock":
+        provider = MockEmbeddingProvider()
+    else:
+        try:
+            provider = GeminiEmbeddingProvider()
+        except ValueError as e:
+            print(f"\n[Warning] {e}")
+            print("Falling back to MockEmbeddingProvider for offline execution.")
+            provider = MockEmbeddingProvider()
+
+    manager = EmbeddingManager(target_repo, cache_dir=cache, provider=provider)
+    result = manager.sync(rebuild=rebuild)
+
+    metrics = [
+        ("Total Chunks", str(result["total_chunks"])),
+        ("Newly Embedded Chunks", str(result["embedded_chunks"])),
+        ("Evicted Vectors", str(result["evicted_chunks"])),
+        ("Vector Dimension", str(result["dimension"])),
+        ("Model Used", str(result["model"])),
+    ]
+
+    if rich_available and console:
+        table = Table(title="Embedding Sync Results")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        for k, v in metrics:
+            table.add_row(k, v)
+        console.print(table)
+    else:
+        print("\n--- Embedding Sync Results ---")
+        for k, v in metrics:
+            print(f"  {k:22}: {v}")
+
+
+@main.command(name="search")
+@click.argument("query")
+@click.option("--repo-path", default=".", type=click.Path(exists=True), help="Target repository path.")
+@click.option(
+    "--mode",
+    default="hybrid",
+    type=click.Choice(["hybrid", "dense_only", "sparse_only"], case_sensitive=False),
+    help="Search mode: hybrid, dense_only, or sparse_only.",
+)
+@click.option(
+    "--provider",
+    "provider_type",
+    default="gemini",
+    type=click.Choice(["gemini", "mock"], case_sensitive=False),
+    help="Embedding provider for dense search.",
+)
+@click.option("--top-k", default=5, type=int, help="Number of chunks to retrieve.")
+@click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
+@click.option("--cache-dir", default=None, help="Custom cache directory.")
+def search(
+    query: str,
+    repo_path: str,
+    mode: str,
+    provider_type: str,
+    top_k: int,
+    budget: int,
+    cache_dir: str | None,
+):
+    """Search indexed codebase using hybrid, dense, or sparse retrieval."""
+    target_repo = Path(repo_path).resolve()
+    cache = Path(cache_dir).resolve() if cache_dir else target_repo / get_settings().cache_dir
+
+    indexer = IncrementalIndexer(target_repo, cache_dir=cache)
+    chunks = indexer.load_chunks()
+
+    if not chunks:
+        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.")
+        return
+
+    if provider_type.lower() == "mock":
+        provider = MockEmbeddingProvider()
+    else:
+        try:
+            provider = GeminiEmbeddingProvider()
+        except ValueError:
+            provider = MockEmbeddingProvider()
+
+    manager = EmbeddingManager(target_repo, cache_dir=cache, provider=provider)
+    vector_store = manager.load_vector_store()
+
+    if mode in ("hybrid", "dense_only") and vector_store.count() == 0:
+        print("Notice: Vector store is empty. Generating embeddings first...")
+        manager.sync()
+        vector_store = manager.load_vector_store()
+
+    retriever = HybridRetriever(
+        chunks=chunks,
+        vector_store=vector_store,
+        embedding_provider=provider,
+    )
+
+    results = retriever.search(query=query, top_k=top_k, mode=mode.lower())
+
+    if not results:
+        print(f"No matching code chunks found for query: '{query}'")
+        return
+
+    # Print search result table
+    if rich_available and console:
+        table = Table(title=f"Search Results (Mode: {mode.upper()}, Top {len(results)})")
+        table.add_column("Rank", style="dim", width=4)
+        table.add_column("Score", style="green", width=8)
+        table.add_column("File", style="cyan")
+        table.add_column("Symbol", style="magenta")
+        table.add_column("Lines", style="yellow")
+        table.add_column("Dense Rank", width=10)
+        table.add_column("Sparse Rank", width=11)
+
+        for rank, r in enumerate(results, start=1):
+            table.add_row(
+                str(rank),
+                f"{r.score:.4f}",
+                r.chunk.file_path,
+                r.chunk.symbol_name or "-",
+                f"{r.chunk.start_line}-{r.chunk.end_line}",
+                str(r.dense_rank or "-"),
+                str(r.sparse_rank or "-"),
+            )
+        console.print(table)
+    else:
+        print(f"\n--- Search Results (Mode: {mode.upper()}, Top {len(results)}) ---")
+        for rank, r in enumerate(results, start=1):
+            d_rank = f"dense:{r.dense_rank}" if r.dense_rank else "dense:-"
+            s_rank = f"sparse:{r.sparse_rank}" if r.sparse_rank else "sparse:-"
+            sym = f" ({r.chunk.symbol_name})" if r.chunk.symbol_name else ""
+            print(f"  {rank}. [{r.score:.4f}] {r.chunk.file_path}:{r.chunk.start_line}-{r.chunk.end_line}{sym} [{d_rank}, {s_rank}]")
+
+    # Assemble context block with budget
+    assembler = ContextAssembler(default_max_tokens=budget)
+    assembled = assembler.assemble(results, max_tokens=budget)
+
+    print(f"\n--- Assembled Context (Estimated {assembled.estimated_tokens}/{budget} tokens, {len(assembled.included_chunks)} included) ---")
+    print(assembled.formatted_text)
 
 
 if __name__ == "__main__":
