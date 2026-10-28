@@ -83,6 +83,38 @@ class TestCodebaseQAEngine(unittest.TestCase):
         full_text = "".join(stream_chunks)
         self.assertIn("src/auth.py", full_text)
 
+    def test_qa_engine_ask_stream_citation_validation(self):
+        completed_responses = []
+
+        def on_complete(resp):
+            completed_responses.append(resp)
+
+        stream = self.qa_engine.ask_stream(
+            "How does user authentication work?",
+            on_complete=on_complete,
+        )
+
+        # Before iteration, get_response() is None
+        self.assertIsNone(stream.get_response())
+        self.assertEqual(len(completed_responses), 0)
+
+        # Iterate and consume stream
+        tokens = list(stream)
+        self.assertGreater(len(tokens), 0)
+
+        # After iteration, get_response() contains validated QAResponse
+        resp = stream.get_response()
+        self.assertIsNotNone(resp)
+        self.assertIn("src/auth.py", resp.answer)
+        self.assertGreaterEqual(len(resp.citations), 1)
+        self.assertEqual(resp.citations[0].file_path, "src/auth.py")
+        self.assertEqual(resp.citations[0].start_line, 1)
+        self.assertEqual(resp.citations[0].end_line, 2)
+
+        # on_complete callback was called with the exact same response
+        self.assertEqual(len(completed_responses), 1)
+        self.assertIs(completed_responses[0], resp)
+
     def test_qa_engine_missing_info_response(self):
         # Query for something completely absent from corpus
         empty_retriever = HybridRetriever(

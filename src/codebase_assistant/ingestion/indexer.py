@@ -61,7 +61,11 @@ class IncrementalIndexer:
     ) -> None:
         self.repository_path = Path(repository_path).resolve()
         settings = get_settings()
-        self.cache_dir = Path(cache_dir or settings.cache_dir).resolve()
+        if cache_dir is not None:
+            c = Path(cache_dir)
+            self.cache_dir = (self.repository_path / c).resolve() if not c.is_absolute() else c.resolve()
+        else:
+            self.cache_dir = (self.repository_path / settings.cache_dir).resolve()
         self.manifest_path = self.cache_dir / "manifest.json"
         self.chunks_path = self.cache_dir / "chunks.json"
 

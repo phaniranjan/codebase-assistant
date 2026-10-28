@@ -1,7 +1,7 @@
 """Orchestrates codebase retrieval, grounded prompt construction, and Gemini Q&A reasoning."""
 
 import logging
-from typing import Iterator, List, Literal, Optional, Tuple
+from typing import Callable, Iterator, List, Literal, Optional, Tuple
 
 from codebase_assistant.config import get_settings
 from codebase_assistant.llm.client import BaseLLMClient, GeminiClient
@@ -12,6 +12,65 @@ from codebase_assistant.retrieval.context_assembler import ContextAssembler
 from codebase_assistant.retrieval.hybrid import HybridRetriever, SearchResult
 
 logger = logging.getLogger(__name__)
+
+
+class StreamingQAResponse:
+    """Wraps a token stream, accumulating the generated answer and validating citations upon completion."""
+
+    def __init__(
+        self,
+        stream_iter: Iterator[str],
+        query: str,
+        included_chunks: List[SearchResult],
+        total_retrieved: int,
+        is_truncated: bool,
+        prompt: str,
+        model_name: str,
+        token_counter: Callable[[str], int],
+        on_complete: Optional[Callable[[QAResponse], None]] = None,
+    ) -> None:
+        self._iter = stream_iter
+        self.query = query
+        self.included_chunks = included_chunks
+        self.total_retrieved = total_retrieved
+        self.is_truncated = is_truncated
+        self.prompt = prompt
+        self.model_name = model_name
+        self.token_counter = token_counter
+        self.on_complete = on_complete
+
+        self.accumulated_text: str = ""
+        self.response: Optional[QAResponse] = None
+
+    def __iter__(self) -> Iterator[str]:
+        parts = []
+        for token in self._iter:
+            parts.append(token)
+            yield token
+
+        self.accumulated_text = "".join(parts)
+        citations = GroundedPromptBuilder.extract_citations(
+            answer=self.accumulated_text,
+            retrieved_chunks=self.included_chunks,
+        )
+        self.response = QAResponse(
+            query=self.query,
+            answer=self.accumulated_text,
+            citations=citations,
+            retrieved_chunks_count=self.total_retrieved,
+            assembled_chunks_count=len(self.included_chunks),
+            omitted_chunks_count=max(0, self.total_retrieved - len(self.included_chunks)),
+            model_used=self.model_name,
+            is_truncated=self.is_truncated,
+            context_tokens=self.token_counter(self.prompt),
+        )
+
+        if self.on_complete:
+            self.on_complete(self.response)
+
+    def get_response(self) -> Optional[QAResponse]:
+        """Return the validated QAResponse after the stream has completed."""
+        return self.response
 
 
 class CodebaseQAEngine:
@@ -129,14 +188,27 @@ class CodebaseQAEngine:
         mode: Literal["hybrid", "dense_only", "sparse_only"] = "hybrid",
         temperature: float = 0.2,
         budget: Optional[int] = None,
-    ) -> Iterator[str]:
-        """Stream answer tokens for developer question."""
-        prompt, system_instruction, _, _, _ = self._prepare_prompt(
+        on_complete: Optional[Callable[[QAResponse], None]] = None,
+    ) -> StreamingQAResponse:
+        """Stream answer tokens for developer question with post-stream citation validation."""
+        prompt, system_instruction, included_chunks, total_retrieved, is_truncated = self._prepare_prompt(
             query=query, top_k=top_k, mode=mode, budget=budget
         )
 
-        yield from self.llm_client.generate_stream(
+        raw_stream = self.llm_client.generate_stream(
             prompt=prompt,
             system_instruction=system_instruction,
             temperature=temperature,
+        )
+
+        return StreamingQAResponse(
+            stream_iter=raw_stream,
+            query=query,
+            included_chunks=included_chunks,
+            total_retrieved=total_retrieved,
+            is_truncated=is_truncated,
+            prompt=prompt,
+            model_name=self.llm_client.model_name,
+            token_counter=self.llm_client.count_tokens,
+            on_complete=on_complete,
         )

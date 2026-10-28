@@ -54,9 +54,15 @@ Remember to ground your answer strictly in the context above, cite exact file pa
     def extract_citations(
         cls, answer: str, retrieved_chunks: List[SearchResult]
     ) -> List[Citation]:
-        """Extract citations referenced in the LLM answer, matching against retrieved chunks."""
+        """Extract citations referenced in the LLM answer, strictly validating line numbers against retrieved chunks.
+
+        Never fabricates fallback citations if none are referenced in the answer text.
+        """
         citations: List[Citation] = []
         seen_spans: Set[str] = set()
+
+        if not retrieved_chunks or not answer.strip():
+            return []
 
         # 1. Regex pattern for explicit citations like [file.py:10-25] or [file.py]
         pattern = re.compile(r"\[([a-zA-Z0-9_\-\./\\]+)(?::(\d+)(?:-(\d+))?)?\]")
@@ -67,7 +73,6 @@ Remember to ground your answer strictly in the context above, cite exact file pa
         for r in retrieved_chunks:
             p = r.chunk.file_path
             chunk_by_path[p] = r.chunk
-            # Also index by basename
             base = p.split("/")[-1]
             if base not in chunk_by_path:
                 chunk_by_path[base] = r.chunk
@@ -78,26 +83,44 @@ Remember to ground your answer strictly in the context above, cite exact file pa
             matched_chunk = chunk_by_path.get(fpath_norm) or chunk_by_path.get(fpath_norm.split("/")[-1])
 
             if matched_chunk:
-                start_l = int(start_s) if start_s else matched_chunk.start_line
-                end_l = int(end_s) if end_s else matched_chunk.end_line
-                key = f"{matched_chunk.file_path}:{start_l}-{end_l}"
+                # Validate line ranges strictly against the actual chunk boundaries
+                chunk_start = matched_chunk.start_line
+                chunk_end = matched_chunk.end_line
+
+                if start_s:
+                    claimed_start = int(start_s)
+                    claimed_end = int(end_s) if end_s else claimed_start
+
+                    # If model cited lines outside the chunk bounds, clamp or revert to chunk bounds
+                    if claimed_start > chunk_end or claimed_end < chunk_start or claimed_start > claimed_end:
+                        # Completely out-of-bounds or inverted line hallucination
+                        validated_start = chunk_start
+                        validated_end = chunk_end
+                    else:
+                        validated_start = max(claimed_start, chunk_start)
+                        validated_end = min(claimed_end, chunk_end)
+                else:
+                    validated_start = chunk_start
+                    validated_end = chunk_end
+
+                key = f"{matched_chunk.file_path}:{validated_start}-{validated_end}"
                 if key not in seen_spans:
                     seen_spans.add(key)
                     citations.append(
                         Citation(
                             file_path=matched_chunk.file_path,
-                            start_line=start_l,
-                            end_line=end_l,
+                            start_line=validated_start,
+                            end_line=validated_end,
                             symbol_name=matched_chunk.symbol_name,
                         )
                     )
 
-        # 2. If no bracketed citations were found, detect exact file path mentions
+        # 2. If no bracketed citations were found, detect explicit file path mentions
         if not citations:
             for r in retrieved_chunks:
                 fpath = r.chunk.file_path
                 basename = fpath.split("/")[-1]
-                if fpath in answer or basename in answer:
+                if fpath in answer or (len(basename) > 4 and basename in answer):
                     key = f"{fpath}:{r.chunk.start_line}-{r.chunk.end_line}"
                     if key not in seen_spans:
                         seen_spans.add(key)
@@ -109,17 +132,5 @@ Remember to ground your answer strictly in the context above, cite exact file pa
                                 symbol_name=r.chunk.symbol_name,
                             )
                         )
-
-        # 3. If still empty and chunks were provided, attach top retrieved chunk as reference
-        if not citations and retrieved_chunks:
-            top_chunk = retrieved_chunks[0].chunk
-            citations.append(
-                Citation(
-                    file_path=top_chunk.file_path,
-                    start_line=top_chunk.start_line,
-                    end_line=top_chunk.end_line,
-                    symbol_name=top_chunk.symbol_name,
-                )
-            )
 
         return citations
