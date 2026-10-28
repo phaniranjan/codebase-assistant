@@ -123,6 +123,20 @@ class TestEmbeddingManager(unittest.TestCase):
         search_res = self.manager.vector_store.search([0.1] * 64, top_k=5)
         self.assertEqual(len(search_res), 0)
 
+    def test_malformed_or_missing_fingerprint_forces_rebuild(self):
+        # 1. Initial sync
+        self.manager.sync()
+        self.assertGreater(self.manager.vector_store.count(), 0)
+
+        # 2. Corrupt/empty the fingerprint in vector store and save to disk
+        self.manager.vector_store.fingerprint = {}
+        self.manager.vector_store.save(self.manager.vector_store_path)
+
+        # 3. Next sync should detect invalid fingerprint and force a full rebuild
+        report = self.manager.sync()
+        self.assertEqual(report["embedded_chunks"], report["total_chunks"])
+        self.assertTrue(self.manager.vector_store.is_valid_fingerprint())
+
 
 if __name__ == "__main__":
     unittest.main()

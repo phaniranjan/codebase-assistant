@@ -55,22 +55,28 @@ class EmbeddingManager:
             self.vector_store.load(self.vector_store_path)
         return self.vector_store
 
+    def compute_current_fingerprint(self) -> Dict[str, Any]:
+        """Compute the canonical fingerprint for the current embedding configuration."""
+        return {
+            "provider": self.provider.__class__.__name__,
+            "model_name": self.provider.model_name,
+            "dimension": self.provider.dimension,
+            "normalized": True,
+            "prefix_format": "File: {file_path}\nSymbol: {symbol_name}\n\n",
+        }
+
     def sync(self, rebuild: bool = False, batch_size: int = 32) -> Dict[str, Any]:
         """Synchronize vector store with current chunks on disk incrementally.
 
         Only generates embeddings for newly added or modified chunks; evicts chunks
         from deleted files or older revisions.
-        Enforces fingerprint checks across provider/model/dimension switches.
+        Enforces strict fingerprint checks across provider/model/dimension switches.
+        Forces index rebuild if stored fingerprint is missing or malformed.
         Safely clears existing vector store when the repository chunk set is empty.
         """
         chunks = self.indexer.load_chunks()
         self.load_vector_store()
-
-        current_fingerprint = {
-            "provider": self.provider.__class__.__name__,
-            "model_name": self.provider.model_name,
-            "dimension": self.provider.dimension,
-        }
+        current_fingerprint = self.compute_current_fingerprint()
 
         # 1. Handle empty chunk set: evict any existing vectors and persist clean index
         if not chunks:
@@ -88,15 +94,27 @@ class EmbeddingManager:
                 "model": self.provider.model_name,
             }
 
-        # 2. Check fingerprint mismatch or rebuild request
+        # 2. Check fingerprint validity and consistency
         stored_fp = self.vector_store.fingerprint
-        if rebuild or (stored_fp and stored_fp != current_fingerprint):
-            if stored_fp and stored_fp != current_fingerprint:
-                logger.warning(
-                    "Embedding fingerprint mismatch (stored: %s, current: %s). Rebuilding vector store to prevent incompatible vector spaces.",
-                    stored_fp,
-                    current_fingerprint,
-                )
+        has_valid_fp = self.vector_store.is_valid_fingerprint()
+
+        # If vector store has entries but fingerprint is invalid, missing, or mismatched -> force rebuild
+        needs_rebuild = rebuild or (
+            self.vector_store.count() > 0 and (not has_valid_fp or stored_fp != current_fingerprint)
+        )
+
+        if needs_rebuild:
+            if self.vector_store.count() > 0:
+                if not has_valid_fp:
+                    logger.warning(
+                        "Vector store fingerprint is missing or malformed. Rebuilding index to ensure vector consistency."
+                    )
+                elif stored_fp != current_fingerprint:
+                    logger.warning(
+                        "Embedding fingerprint mismatch (stored: %s, current: %s). Rebuilding vector store to prevent incompatible vector spaces.",
+                        stored_fp,
+                        current_fingerprint,
+                    )
             self.vector_store.clear()
             self.vector_store.dimension = self.provider.dimension
             self.vector_store.fingerprint = current_fingerprint
@@ -145,7 +163,7 @@ class EmbeddingManager:
                 batch_vectors = self.provider.embed_batch(batch_texts)
                 self.vector_store.add(batch_ids, batch_vectors, batch_meta)
 
-        # 6. Save vector store
+        # 6. Save vector store with canonical fingerprint
         self.vector_store.fingerprint = current_fingerprint
         self.vector_store.save(self.vector_store_path)
 

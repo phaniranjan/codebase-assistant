@@ -79,6 +79,28 @@ class TestContextAssembler(unittest.TestCase):
         self.assertTrue(context.is_truncated())
         self.assertEqual(context.formatted_text, "")
 
+    def test_complete_prompt_envelope_budgeting(self):
+        assembler = ContextAssembler(default_max_tokens=1000)
+        context = assembler.assemble(
+            self.results,
+            system_instruction="You are a strict grounded coding assistant.",
+            user_query="How do I configure the server?",
+        )
+
+        self.assertIn("You are a strict grounded coding assistant.", context.full_prompt)
+        self.assertIn("## Context & Source References", context.full_prompt)
+        self.assertIn("## Developer Query\nHow do I configure the server?", context.full_prompt)
+        self.assertGreater(context.total_prompt_tokens, context.estimated_tokens)
+
+    def test_custom_token_counter(self):
+        # Exact word count tokenizer
+        def word_counter(text: str) -> int:
+            return len(text.split())
+
+        assembler = ContextAssembler(default_max_tokens=500, token_counter=word_counter)
+        context = assembler.assemble(self.results)
+        self.assertEqual(context.estimated_tokens, word_counter(context.formatted_text))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,9 +20,9 @@ class VectorStore(BaseVectorStore):
       Tier 2: NumPy matrix dot-product (np.dot) when numpy is installed.
       Tier 3: Pure-Python dot product for zero-dependency portability.
 
-    All vectors are stored normalized so dot-product equals cosine similarity.
-    Persists an embedding fingerprint (provider, model, dimension) to safeguard
-    against mixed-vector spaces across model switches.
+    All vectors are strictly L2-normalized so inner product equals cosine similarity.
+    Persists an embedding fingerprint (provider, model, dimension, preprocessing) to safeguard
+    against mixed-vector spaces across model switches or corrupted indexes.
     """
 
     def __init__(
@@ -56,12 +56,25 @@ class VectorStore(BaseVectorStore):
 
     @staticmethod
     def _normalize(vec: List[float]) -> List[float]:
-        """Normalize vector to unit length (L2 norm = 1.0)."""
+        """Normalize vector to unit length (L2 norm = 1.0).
+
+        Handles zero-norm edge cases safely by returning a unit vector on the first axis.
+        """
         squared_sum = sum(x * x for x in vec)
         norm = math.sqrt(squared_sum)
         if norm == 0.0:
-            return vec
+            res = [0.0] * len(vec)
+            if res:
+                res[0] = 1.0
+            return res
         return [x / norm for x in vec]
+
+    def is_valid_fingerprint(self) -> bool:
+        """Verify that the stored embedding fingerprint is non-empty and well-formed."""
+        if not isinstance(self.fingerprint, dict) or not self.fingerprint:
+            return False
+        required_keys = {"provider", "model_name", "dimension"}
+        return all(k in self.fingerprint and self.fingerprint[k] is not None for k in required_keys)
 
     def add(
         self,
@@ -69,7 +82,7 @@ class VectorStore(BaseVectorStore):
         vectors: List[List[float]],
         metadatas: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Add or update vectors in the store."""
+        """Add or update vectors in the store with strict L2 normalization."""
         if len(ids) != len(vectors):
             raise ValueError(f"ids count ({len(ids)}) does not match vectors count ({len(vectors)})")
 
@@ -84,6 +97,7 @@ class VectorStore(BaseVectorStore):
                     f"Vector dimension mismatch for '{chunk_id}': expected {self.dimension}, got {len(vec)}"
                 )
 
+            # Strictly enforce L2 unit-norm on all stored vectors
             norm_vec = self._normalize(vec)
             self._vectors[chunk_id] = norm_vec
 
@@ -109,13 +123,18 @@ class VectorStore(BaseVectorStore):
         return self._metadatas.get(chunk_id)
 
     def search(self, query_vector: List[float], top_k: int = 5) -> List[Tuple[str, float]]:
-        """Find the top_k most similar vectors to query_vector using cosine similarity."""
+        """Find the top_k most similar vectors to query_vector using cosine similarity.
+
+        Strictly normalizes query_vector so that inner product equals cosine similarity
+        consistently across all three execution tiers.
+        """
         if not self._vectors:
             return []
 
         if top_k <= 0:
             return []
 
+        # Strictly enforce L2 normalization on query vector
         norm_query = self._normalize(query_vector)
 
         # Tier 1: FAISS acceleration if faiss and numpy are available
@@ -141,14 +160,22 @@ class VectorStore(BaseVectorStore):
         return scores[:top_k]
 
     def _search_faiss(self, query: List[float], top_k: int) -> List[Tuple[str, float]]:
-        """FAISS IndexFlatIP accelerated inner product search."""
+        """FAISS IndexFlatIP accelerated inner product search with explicit normalization."""
         np = self._numpy
+        faiss = self._faiss
         ids = list(self._vectors.keys())
+
+        # Construct float32 matrix
         matrix = np.array([self._vectors[cid] for cid in ids], dtype=np.float32)
-        dim = matrix.shape[1]
-        index = self._faiss.IndexFlatIP(dim)
-        index.add(matrix)
+        faiss.normalize_L2(matrix)
+
         q = np.array([query], dtype=np.float32)
+        faiss.normalize_L2(q)
+
+        dim = matrix.shape[1]
+        index = faiss.IndexFlatIP(dim)
+        index.add(matrix)
+
         k = min(top_k, len(ids))
         distances, indices = index.search(q, k)
         return [(ids[idx], float(dist)) for dist, idx in zip(distances[0], indices[0]) if idx >= 0]
@@ -165,7 +192,7 @@ class VectorStore(BaseVectorStore):
         return [(ids[idx], float(sims[idx])) for idx in top_indices]
 
     def save(self, path: Path) -> None:
-        """Atomically persist vector store to disk."""
+        """Atomically persist vector store and fingerprint to disk."""
         target_path = Path(path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         temp_file = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
@@ -191,7 +218,7 @@ class VectorStore(BaseVectorStore):
             raise
 
     def load(self, path: Path) -> None:
-        """Load vector store from disk."""
+        """Load vector store and fingerprint from disk."""
         target_path = Path(path)
         if not target_path.is_file():
             logger.warning("Vector store file %s does not exist.", target_path)

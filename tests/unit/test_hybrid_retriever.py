@@ -41,7 +41,14 @@ class TestHybridRetriever(unittest.TestCase):
         }
 
         self.provider = MockEmbeddingProvider(dimension=128)
-        self.vector_store = VectorStore(dimension=128)
+        self.vector_store = VectorStore(
+            dimension=128,
+            fingerprint={
+                "provider": "MockEmbeddingProvider",
+                "model_name": "mock-embedding-v1",
+                "dimension": 128,
+            },
+        )
 
         # Embed and store
         vec_a = self.provider.embed_text(self.chunk_a.content)
@@ -53,6 +60,16 @@ class TestHybridRetriever(unittest.TestCase):
             vector_store=self.vector_store,
             embedding_provider=self.provider,
         )
+
+    def test_provider_fingerprint_mismatch_raises_error(self):
+        incompatible_provider = MockEmbeddingProvider(dimension=128, model_name="different-model")
+        with self.assertRaises(ValueError) as ctx:
+            HybridRetriever(
+                chunks=self.chunks,
+                vector_store=self.vector_store,
+                embedding_provider=incompatible_provider,
+            )
+        self.assertIn("Embedding provider mismatch", str(ctx.exception))
 
     def test_hybrid_search_rrf(self):
         results = self.retriever.search("authenticate user token", top_k=2, mode="hybrid")

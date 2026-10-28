@@ -48,6 +48,25 @@ class HybridRetriever:
             self.bm25 = BM25Retriever()
             self.bm25.index(list(chunks.values()))
 
+        # Verify that query embedding provider matches vector store fingerprint
+        if self.vector_store.count() > 0 and self.vector_store.is_valid_fingerprint():
+            fp = self.vector_store.fingerprint
+            curr_provider = self.embedding_provider.__class__.__name__
+            curr_model = self.embedding_provider.model_name
+            curr_dim = self.embedding_provider.dimension
+
+            if (
+                fp.get("provider") != curr_provider
+                or fp.get("model_name") != curr_model
+                or fp.get("dimension") != curr_dim
+            ):
+                raise ValueError(
+                    f"Embedding provider mismatch during retrieval! Vector store index was built with "
+                    f"{fp.get('provider')}:{fp.get('model_name')} (dim {fp.get('dimension')}), "
+                    f"but retrieval was invoked with {curr_provider}:{curr_model} (dim {curr_dim}). "
+                    f"Please run 'codebase-assistant embed --rebuild' or use the matching provider."
+                )
+
     def search(
         self,
         query: str,
