@@ -15,13 +15,23 @@ logger = logging.getLogger(__name__)
 class VectorStore(BaseVectorStore):
     """Local vector store with cosine similarity nearest-neighbor search.
 
-    Operates in pure Python by default with automatic acceleration if NumPy
-    or FAISS is installed. All vectors are stored normalized so dot-product
-    equals cosine similarity.
+    Provides three execution tiers:
+      Tier 1: FAISS (IndexFlatIP) when faiss and numpy are installed.
+      Tier 2: NumPy matrix dot-product (np.dot) when numpy is installed.
+      Tier 3: Pure-Python dot product for zero-dependency portability.
+
+    All vectors are stored normalized so dot-product equals cosine similarity.
+    Persists an embedding fingerprint (provider, model, dimension) to safeguard
+    against mixed-vector spaces across model switches.
     """
 
-    def __init__(self, dimension: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        dimension: Optional[int] = None,
+        fingerprint: Optional[Dict[str, Any]] = None,
+    ) -> None:
         self.dimension = dimension
+        self.fingerprint = fingerprint or {}
         self._vectors: Dict[str, List[float]] = {}
         self._metadatas: Dict[str, Dict[str, Any]] = {}
 
@@ -108,11 +118,18 @@ class VectorStore(BaseVectorStore):
 
         norm_query = self._normalize(query_vector)
 
-        # 1. NumPy acceleration if available
+        # Tier 1: FAISS acceleration if faiss and numpy are available
+        if self._faiss is not None and self._numpy is not None and len(self._vectors) > 20:
+            try:
+                return self._search_faiss(norm_query, top_k)
+            except Exception as e:
+                logger.warning("FAISS search failed, falling back to NumPy/pure-Python: %s", e)
+
+        # Tier 2: NumPy matrix dot-product acceleration
         if self._numpy is not None and len(self._vectors) > 20:
             return self._search_numpy(norm_query, top_k)
 
-        # 2. Pure-Python dot product
+        # Tier 3: Pure-Python dot product
         scores: List[Tuple[str, float]] = []
         for chunk_id, vec in self._vectors.items():
             # Dot product of normalized vectors == cosine similarity
@@ -122,6 +139,19 @@ class VectorStore(BaseVectorStore):
         # Sort descending by similarity
         scores.sort(key=lambda x: x[1], reverse=True)
         return scores[:top_k]
+
+    def _search_faiss(self, query: List[float], top_k: int) -> List[Tuple[str, float]]:
+        """FAISS IndexFlatIP accelerated inner product search."""
+        np = self._numpy
+        ids = list(self._vectors.keys())
+        matrix = np.array([self._vectors[cid] for cid in ids], dtype=np.float32)
+        dim = matrix.shape[1]
+        index = self._faiss.IndexFlatIP(dim)
+        index.add(matrix)
+        q = np.array([query], dtype=np.float32)
+        k = min(top_k, len(ids))
+        distances, indices = index.search(q, k)
+        return [(ids[idx], float(dist)) for dist, idx in zip(distances[0], indices[0]) if idx >= 0]
 
     def _search_numpy(self, query: List[float], top_k: int) -> List[Tuple[str, float]]:
         """NumPy matrix dot-product acceleration."""
@@ -142,6 +172,7 @@ class VectorStore(BaseVectorStore):
 
         payload = {
             "dimension": self.dimension,
+            "fingerprint": self.fingerprint,
             "count": len(self._vectors),
             "vectors": self._vectors,
             "metadatas": self._metadatas,
@@ -170,6 +201,7 @@ class VectorStore(BaseVectorStore):
             data = json.load(f)
 
         self.dimension = data.get("dimension")
+        self.fingerprint = data.get("fingerprint", {})
         self._vectors = data.get("vectors", {})
         self._metadatas = data.get("metadatas", {})
 

@@ -69,6 +69,16 @@ class TestContextAssembler(unittest.TestCase):
         context = assembler.assemble(duplicate_results)
         self.assertEqual(len(context.included_chunks), 1)
 
+    def test_first_chunk_exceeds_budget_is_omitted(self):
+        # A tiny budget of 5 tokens (~17 characters) cannot fit chunk1 (~100 chars)
+        assembler = ContextAssembler(default_max_tokens=5)
+        context = assembler.assemble(self.results, max_tokens=5)
+
+        self.assertEqual(len(context.included_chunks), 0)
+        self.assertEqual(context.omitted_chunks_count, 2)
+        self.assertTrue(context.is_truncated())
+        self.assertEqual(context.formatted_text, "")
+
 
 if __name__ == "__main__":
     unittest.main()

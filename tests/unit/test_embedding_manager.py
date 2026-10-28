@@ -82,6 +82,47 @@ class TestEmbeddingManager(unittest.TestCase):
         report = self.manager.sync(rebuild=True)
         self.assertEqual(report["embedded_chunks"], report["total_chunks"])
 
+    def test_embedding_fingerprint_mismatch_forces_rebuild(self):
+        # 1. First sync with mock provider v1 (dimension 64)
+        report1 = self.manager.sync()
+        self.assertEqual(self.manager.vector_store.fingerprint.get("dimension"), 64)
+        self.assertEqual(self.manager.vector_store.fingerprint.get("model_name"), "mock-embedding-v1")
+
+        # 2. Switch provider to model v2 with dimension 128
+        new_provider = MockEmbeddingProvider(dimension=128, model_name="mock-embedding-v2")
+        manager_v2 = EmbeddingManager(
+            repository_path=self.repo_path,
+            cache_dir=self.cache_dir,
+            provider=new_provider,
+        )
+
+        # 3. Next sync should detect fingerprint mismatch and re-embed all chunks
+        report2 = manager_v2.sync()
+        self.assertEqual(report2["embedded_chunks"], report2["total_chunks"])
+        self.assertEqual(manager_v2.vector_store.dimension, 128)
+        self.assertEqual(manager_v2.vector_store.fingerprint.get("model_name"), "mock-embedding-v2")
+
+    def test_empty_chunk_set_cleans_vector_store(self):
+        # 1. Initial sync has vectors
+        self.manager.sync()
+        self.assertGreater(self.manager.vector_store.count(), 0)
+
+        # 2. Delete all files in repository and re-index
+        self.file1.unlink()
+        self.file2.unlink()
+        self.indexer.index()
+        self.assertEqual(len(self.indexer.load_chunks()), 0)
+
+        # 3. Synchronize with empty chunk set
+        report = self.manager.sync()
+        self.assertEqual(report["total_chunks"], 0)
+        self.assertGreater(report["evicted_chunks"], 0)
+        self.assertEqual(self.manager.vector_store.count(), 0)
+
+        # 4. Search should return 0 results
+        search_res = self.manager.vector_store.search([0.1] * 64, top_k=5)
+        self.assertEqual(len(search_res), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

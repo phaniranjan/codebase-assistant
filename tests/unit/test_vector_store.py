@@ -82,5 +82,43 @@ class TestVectorStore(unittest.TestCase):
             self.assertEqual(res[0][0], "id_b")
 
 
+    def test_fingerprint_persistence_and_reload(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "fp_store.json"
+            fp = {"provider": "MockEmbeddingProvider", "model_name": "test-v1", "dimension": 4}
+            store1 = VectorStore(dimension=4, fingerprint=fp)
+            store1.add(["c1"], [[1.0, 0.0, 0.0, 0.0]])
+            store1.save(path)
+
+            store2 = VectorStore()
+            store2.load(path)
+            self.assertEqual(store2.fingerprint, fp)
+
+    def test_faiss_search_execution_and_fallback(self):
+        from unittest.mock import MagicMock
+        store = VectorStore(dimension=2)
+        # Mock faiss and numpy
+        mock_faiss = MagicMock()
+        mock_index = MagicMock()
+        mock_index.search.return_value = ([[0.99]], [[0]])
+        mock_faiss.IndexFlatIP.return_value = mock_index
+
+        mock_np = MagicMock()
+        mock_np.float32 = "float32"
+        mock_np.array.side_effect = lambda x, **kwargs: MagicMock(shape=(len(x), 2)) if isinstance(x, list) else MagicMock()
+
+        store._faiss = mock_faiss
+        store._numpy = mock_np
+
+        # Add 25 vectors to trigger > 20 threshold
+        ids = [f"c_{i}" for i in range(25)]
+        vecs = [[1.0, 0.0] for _ in range(25)]
+        store.add(ids, vecs)
+
+        results = store.search([1.0, 0.0], top_k=1)
+        self.assertEqual(len(results), 1)
+        mock_faiss.IndexFlatIP.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

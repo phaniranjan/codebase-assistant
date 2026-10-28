@@ -60,33 +60,57 @@ class EmbeddingManager:
 
         Only generates embeddings for newly added or modified chunks; evicts chunks
         from deleted files or older revisions.
+        Enforces fingerprint checks across provider/model/dimension switches.
+        Safely clears existing vector store when the repository chunk set is empty.
         """
         chunks = self.indexer.load_chunks()
+        self.load_vector_store()
+
+        current_fingerprint = {
+            "provider": self.provider.__class__.__name__,
+            "model_name": self.provider.model_name,
+            "dimension": self.provider.dimension,
+        }
+
+        # 1. Handle empty chunk set: evict any existing vectors and persist clean index
         if not chunks:
-            logger.warning("No chunks found in cache for %s. Run indexing first.", self.repository_path)
+            evicted_count = self.vector_store.count()
+            if evicted_count > 0:
+                self.vector_store.clear()
+                self.vector_store.fingerprint = current_fingerprint
+                self.vector_store.save(self.vector_store_path)
+                logger.info("Evicted %d vectors because repository chunk set is empty.", evicted_count)
             return {
                 "total_chunks": 0,
                 "embedded_chunks": 0,
-                "evicted_chunks": 0,
+                "evicted_chunks": evicted_count,
                 "dimension": self.provider.dimension,
                 "model": self.provider.model_name,
             }
 
-        if rebuild:
+        # 2. Check fingerprint mismatch or rebuild request
+        stored_fp = self.vector_store.fingerprint
+        if rebuild or (stored_fp and stored_fp != current_fingerprint):
+            if stored_fp and stored_fp != current_fingerprint:
+                logger.warning(
+                    "Embedding fingerprint mismatch (stored: %s, current: %s). Rebuilding vector store to prevent incompatible vector spaces.",
+                    stored_fp,
+                    current_fingerprint,
+                )
             self.vector_store.clear()
-        else:
-            self.load_vector_store()
+            self.vector_store.dimension = self.provider.dimension
+            self.vector_store.fingerprint = current_fingerprint
 
         current_chunk_ids = set(chunks.keys())
         stored_ids = set(self.vector_store._vectors.keys())
 
-        # 1. Stale chunks eviction
+        # 3. Evict stale chunks
         stale_ids = list(stored_ids - current_chunk_ids)
         if stale_ids:
             self.vector_store.remove(stale_ids)
             logger.info("Evicted %d stale vectors from vector store.", len(stale_ids))
 
-        # 2. Identify missing or updated chunks
+        # 4. Identify missing or updated chunks
         ids_to_embed: List[str] = []
         texts_to_embed: List[str] = []
         metadatas_to_embed: List[Dict[str, Any]] = []
@@ -110,7 +134,7 @@ class EmbeddingManager:
                     "content_hash": chunk.content_hash,
                 })
 
-        # 3. Generate embeddings in batches
+        # 5. Generate embeddings in batches
         if ids_to_embed:
             logger.info("Generating embeddings for %d chunks using %s...", len(ids_to_embed), self.provider.model_name)
             for i in range(0, len(ids_to_embed), batch_size):
@@ -121,7 +145,8 @@ class EmbeddingManager:
                 batch_vectors = self.provider.embed_batch(batch_texts)
                 self.vector_store.add(batch_ids, batch_vectors, batch_meta)
 
-        # 4. Save vector store
+        # 6. Save vector store
+        self.vector_store.fingerprint = current_fingerprint
         self.vector_store.save(self.vector_store_path)
 
         return {

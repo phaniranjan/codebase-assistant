@@ -1,5 +1,6 @@
 """Context assembler formatting retrieved chunks with strict token budgeting and citations."""
 
+import math
 from typing import List
 
 from pydantic import BaseModel, Field
@@ -21,18 +22,24 @@ class AssembledContext(BaseModel):
 
 
 class ContextAssembler:
-    """Formats retrieved code chunks for LLM prompts with token budgeting and citation headers."""
+    """Formats retrieved code chunks for LLM prompts with token budgeting and citation headers.
 
-    # Fast heuristic: 1 token ≈ 4 characters for mixed code and natural language
-    CHARS_PER_TOKEN = 4
+    Uses a conservative estimation of ~3.5 characters per token for source code to ensure
+    the prompt payload never overflows Gemini's token window. Strictly enforces the budget
+    on all chunks (including the initial chunk).
+    """
+
+    CHARS_PER_TOKEN = 3.5
 
     def __init__(self, default_max_tokens: int = 8192) -> None:
         self.default_max_tokens = default_max_tokens
 
     @classmethod
     def estimate_tokens(cls, text: str) -> int:
-        """Estimate token count for a text string."""
-        return max(1, len(text) // cls.CHARS_PER_TOKEN)
+        """Estimate token count conservatively for code and natural language text."""
+        if not text:
+            return 0
+        return max(1, int(math.ceil(len(text) / cls.CHARS_PER_TOKEN)))
 
     def assemble(
         self,
@@ -46,7 +53,7 @@ class ContextAssembler:
         omitted_count = 0
         blocks: List[str] = []
         accumulated_chars = 0
-        budget_chars = budget * self.CHARS_PER_TOKEN
+        budget_chars = int(budget * self.CHARS_PER_TOKEN)
 
         seen_spans = set()  # (file_path, start_line, end_line)
 
@@ -68,7 +75,8 @@ class ContextAssembler:
             formatted_chunk = f"{header}{code_block}\n"
             chunk_chars = len(formatted_chunk)
 
-            if accumulated_chars + chunk_chars > budget_chars and included:
+            # Strict budget enforcement: applies to all candidates including the first chunk
+            if accumulated_chars + chunk_chars > budget_chars:
                 omitted_count += 1
                 continue
 
