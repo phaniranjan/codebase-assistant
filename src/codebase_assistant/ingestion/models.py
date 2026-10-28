@@ -67,6 +67,7 @@ class IndexManifest(BaseModel):
     """Top-level manifest of the repository knowledge base."""
 
     repository_path: str
+    repository_id: str = ""  # Unique identifier for repository identity validation
     source_revision: Optional[SourceRevision] = None
     indexed_at: str
     file_count: int = 0

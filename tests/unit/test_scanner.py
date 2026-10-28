@@ -85,6 +85,56 @@ class TestRepositoryScanner(unittest.TestCase):
         secret_exclusions = [e for e in excluded if "[SECRET]" in e]
         self.assertTrue(any(".env" in e for e in secret_exclusions))
 
+    def test_nested_sensitive_files(self):
+        scanner = RepositoryScanner(self.root)
+
+        # Deeply nested secret files
+        self.assertTrue(scanner.is_secret_file(Path("services/auth/deep/nested/.env.staging")))
+        self.assertTrue(scanner.is_secret_file(Path("infra/security/keys/id_ed25519")))
+        self.assertTrue(scanner.is_secret_file(Path("config/secrets.json")))
+        self.assertTrue(scanner.is_secret_file(Path("deploy/secrets.yaml")))
+        self.assertTrue(scanner.is_secret_file(Path("credentials/app.p12")))
+        self.assertTrue(scanner.is_secret_file(Path("home/.netrc")))
+
+    def test_content_based_secret_detection(self):
+        # File has non-secret name but contains private key header
+        cert_file = self.root / "src" / "crypto_data.txt"
+        cert_file.parent.mkdir(parents=True, exist_ok=True)
+        cert_file.write_text(
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0m...\n-----END RSA PRIVATE KEY-----\n",
+            encoding="utf-8",
+        )
+
+        scanner = RepositoryScanner(self.root)
+        self.assertTrue(scanner.contains_secret_content(cert_file))
+
+        eligible, _, excluded = scanner.scan()
+        eligible_posix = [p.as_posix() for p in eligible]
+        self.assertNotIn("src/crypto_data.txt", eligible_posix)
+        self.assertTrue(any("[SECRET_CONTENT]" in e for e in excluded))
+
+    def test_symlink_pointing_outside_repo_is_excluded(self):
+        # Create external file outside repository
+        outside_dir = tempfile.TemporaryDirectory()
+        outside_file = Path(outside_dir.name) / "external_secret.py"
+        outside_file.write_text("API_SECRET = 'outside'\n", encoding="utf-8")
+
+        symlink_path = self.root / "external_link.py"
+        try:
+            symlink_path.symlink_to(outside_file)
+        except OSError:
+            # On Windows without developer mode symlink privilege, skip symlink test
+            outside_dir.cleanup()
+            return
+
+        scanner = RepositoryScanner(self.root)
+        eligible, _, excluded = scanner.scan()
+        eligible_posix = [p.as_posix() for p in eligible]
+
+        self.assertNotIn("external_link.py", eligible_posix)
+        self.assertTrue(any("[SYMLINK_OUTSIDE]" in e for e in excluded))
+        outside_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

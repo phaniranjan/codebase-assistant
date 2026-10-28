@@ -1,6 +1,7 @@
 """Incremental indexer tracking source revisions, file hashes, and stale chunk removal."""
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -78,7 +79,7 @@ class IncrementalIndexer:
         self.chunker = chunker or LogicalChunker()
 
     def load_manifest(self) -> Optional[IndexManifest]:
-        """Load persisted manifest if it exists."""
+        """Load persisted manifest if it exists and matches repository identity."""
         try:
             if not self.manifest_path.is_file():
                 return None
@@ -88,7 +89,19 @@ class IncrementalIndexer:
         try:
             with open(self.manifest_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return IndexManifest.model_validate(data)
+            manifest = IndexManifest.model_validate(data)
+
+            # Repository identity verification: avoid cross-repository index corruption
+            expected_repo = self.repository_path.as_posix()
+            if manifest.repository_path and manifest.repository_path != expected_repo:
+                logger.warning(
+                    "Repository mismatch in manifest: cached '%s' != current '%s'. Starting fresh index.",
+                    manifest.repository_path,
+                    expected_repo,
+                )
+                return None
+
+            return manifest
         except Exception as e:
             logger.warning("Could not read index manifest at %s: %s. Starting fresh.", self.manifest_path, e)
             return None
@@ -142,13 +155,16 @@ class IncrementalIndexer:
         manifest = None if rebuild else self.load_manifest()
         chunks = {} if rebuild or manifest is None else self.load_chunks()
 
+        repo_id = hashlib.sha256(self.repository_path.as_posix().encode("utf-8")).hexdigest()[:16]
         if manifest is None:
             manifest = IndexManifest(
                 repository_path=self.repository_path.as_posix(),
+                repository_id=repo_id,
                 source_revision=revision,
                 indexed_at=timestamp,
             )
 
+        manifest.repository_id = repo_id
         manifest.source_revision = revision
         manifest.indexed_at = timestamp
 
@@ -246,12 +262,16 @@ class IncrementalIndexer:
             logger.error("Failed to read file %s: %s", abs_path, e)
             return []
 
-        file_chunks = self.chunker.chunk_file(
-            content=content,
-            rel_file_path=posix_path,
-            language=lang,
-            source_revision=revision_sha,
-        )
+        try:
+            file_chunks = self.chunker.chunk_file(
+                content=content,
+                rel_file_path=posix_path,
+                language=lang,
+                source_revision=revision_sha,
+            )
+        except Exception as e:
+            logger.error("Failed to chunk file %s: %s", posix_path, e)
+            return []
 
         chunk_ids: List[str] = []
         for c in file_chunks:

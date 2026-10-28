@@ -65,16 +65,55 @@ class RepositoryScanner:
         return patterns
 
     def is_secret_file(self, rel_path: Path) -> bool:
-        """Check if path matches known secret, token, or credential patterns."""
-        filename = rel_path.name
-        rel_str = rel_path.as_posix()
+        """Check if path matches known secret, token, or credential patterns.
+
+        Limits of Secret Detection:
+        Matches file names, suffixes, and parent directories against known credential
+        patterns (.env, *.key, *.pem, id_rsa, credentials.json, token.json).
+        This does NOT perform entropy analysis or arbitrary string searches in code.
+        """
+        filename = rel_path.name.lower()
+        rel_str = rel_path.as_posix().lower()
 
         for pattern in self.secret_patterns:
-            if fnmatch.fnmatch(filename, pattern) or fnmatch.fnmatch(rel_str, pattern):
+            pat_lower = pattern.lower()
+            if fnmatch.fnmatch(filename, pat_lower) or fnmatch.fnmatch(rel_str, pat_lower):
                 return True
-            # Also check base prefix like .env.local, .env.production
-            if pattern.startswith(".env") and (filename == ".env" or filename.startswith(".env.")):
+            # Check nested path components
+            if any(fnmatch.fnmatch(part.lower(), pat_lower) for part in rel_path.parts):
                 return True
+            # Check prefix/suffix variants like .env.local, .env.staging
+            if pat_lower.startswith(".env") and (filename == ".env" or filename.startswith(".env.")):
+                return True
+            if pat_lower.endswith(".env") and filename.endswith(".env"):
+                return True
+        return False
+
+    @staticmethod
+    def contains_secret_content(abs_path: Path) -> bool:
+        """Inspect file header for standard cryptographic private key blocks.
+
+        Limits of Secret Detection:
+        Scans the initial 4KB for PEM private key headers (e.g. '-----BEGIN PRIVATE KEY-----').
+        It will not detect inline API keys, high-entropy passwords, or database connection strings
+        embedded within code files. Those should be intercepted by pre-commit hooks (e.g., Gitleaks).
+        """
+        if not abs_path.is_file():
+            return False
+        try:
+            with open(abs_path, "rb") as f:
+                head = f.read(4096)
+                if b"-----BEGIN " in head and (
+                    b"PRIVATE KEY-----" in head
+                    or b"RSA PRIVATE KEY-----" in head
+                    or b"OPENSSH PRIVATE KEY-----" in head
+                    or b"EC PRIVATE KEY-----" in head
+                    or b"DSA PRIVATE KEY-----" in head
+                    or b"PGP PRIVATE KEY BLOCK-----" in head
+                ):
+                    return True
+        except Exception:
+            pass
         return False
 
     def is_ignored_directory(self, dir_name: str, rel_dir: Path) -> bool:
@@ -223,17 +262,34 @@ class RepositoryScanner:
                 rel_path = rel_dir / f if rel_dir != Path(".") else Path(f)
                 abs_path = root_path / f
 
-                # 1. Enforce strict secret exclusion
+                # 0. Symlink verification: never traverse symlinks pointing outside repository
+                if abs_path.is_symlink():
+                    try:
+                        resolved = abs_path.resolve()
+                        resolved.relative_to(self.repository_path)
+                    except (ValueError, RuntimeError):
+                        excluded_files.append(f"[SYMLINK_OUTSIDE] {rel_path.as_posix()}")
+                        continue
+                    if not resolved.exists():
+                        excluded_files.append(f"[BROKEN_SYMLINK] {rel_path.as_posix()}")
+                        continue
+
+                # 1. Enforce strict secret exclusion (filename & path rules)
                 if self.is_secret_file(rel_path):
                     excluded_files.append(f"[SECRET] {rel_path.as_posix()}")
                     continue
 
-                # 2. Enforce ignore patterns
+                # 2. Enforce content-level secret detection (PEM / private keys)
+                if self.contains_secret_content(abs_path):
+                    excluded_files.append(f"[SECRET_CONTENT] {rel_path.as_posix()}")
+                    continue
+
+                # 3. Enforce ignore patterns
                 if self.is_ignored(rel_path):
                     excluded_files.append(f"[IGNORED] {rel_path.as_posix()}")
                     continue
 
-                # 3. Check language support
+                # 4. Check language support
                 lang = self.detect_language(rel_path)
                 if not lang:
                     excluded_files.append(f"[UNSUPPORTED] {rel_path.as_posix()}")

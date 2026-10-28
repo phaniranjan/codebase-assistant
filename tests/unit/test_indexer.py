@@ -103,6 +103,95 @@ class TestIncrementalIndexer(unittest.TestCase):
         self.assertEqual(len(report.added_files), 2)
         self.assertEqual(report.total_files, 2)
 
+    def test_renamed_file_evicts_old_and_indexes_new(self):
+        indexer = IncrementalIndexer(self.repo_dir, cache_dir=self.cache_dir)
+        indexer.index()
+
+        # Rename beta.py -> beta_renamed.py
+        new_beta = self.repo_dir / "src" / "beta_renamed.py"
+        new_beta.write_text(self.file_b.read_text(encoding="utf-8"), encoding="utf-8")
+        self.file_b.unlink()
+
+        report = indexer.index()
+        self.assertIn("src/beta.py", report.deleted_files)
+        self.assertIn("src/beta_renamed.py", report.added_files)
+
+        chunks = indexer.load_chunks()
+        old_chunks = [c for c in chunks.values() if c.file_path == "src/beta.py"]
+        new_chunks = [c for c in chunks.values() if c.file_path == "src/beta_renamed.py"]
+
+        self.assertEqual(len(old_chunks), 0)
+        self.assertTrue(len(new_chunks) >= 1)
+
+    def test_empty_file_handling(self):
+        indexer = IncrementalIndexer(self.repo_dir, cache_dir=self.cache_dir)
+        indexer.index()
+
+        # 1. Add new empty file
+        empty_file = self.repo_dir / "src" / "empty.py"
+        empty_file.write_text("", encoding="utf-8")
+
+        report1 = indexer.index()
+        self.assertIn("src/empty.py", report1.added_files)
+
+        manifest = indexer.load_manifest()
+        self.assertIn("src/empty.py", manifest.files)
+        self.assertEqual(manifest.files["src/empty.py"].chunk_ids, [])
+
+        # 2. Modify alpha.py to be empty: verify old chunks are purged
+        self.file_a.write_text("   \n\n  ", encoding="utf-8")
+        report2 = indexer.index()
+        self.assertIn("src/alpha.py", report2.modified_files)
+
+        chunks = indexer.load_chunks()
+        alpha_chunks = [c for c in chunks.values() if c.file_path == "src/alpha.py"]
+        self.assertEqual(len(alpha_chunks), 0)
+
+    def test_parsing_failure_does_not_leave_stale_chunks(self):
+        indexer = IncrementalIndexer(self.repo_dir, cache_dir=self.cache_dir)
+        indexer.index()
+
+        # Mock chunker to simulate unexpected parser failure
+        original_chunk_file = indexer.chunker.chunk_file
+
+        def failing_chunk_file(content, rel_file_path, language, source_revision=None):
+            if "alpha.py" in rel_file_path:
+                raise RuntimeError("Simulated unrecoverable AST parser crash")
+            return original_chunk_file(content, rel_file_path, language, source_revision)
+
+        indexer.chunker.chunk_file = failing_chunk_file
+
+        # Modify alpha.py
+        self.file_a.write_text("def modified_during_crash():\n    pass\n", encoding="utf-8")
+
+        report = indexer.index()
+        self.assertIn("src/alpha.py", report.modified_files)
+
+        # Ensure old alpha chunks were purged and no stale chunks appear current
+        chunks = indexer.load_chunks()
+        alpha_chunks = [c for c in chunks.values() if c.file_path == "src/alpha.py"]
+        self.assertEqual(len(alpha_chunks), 0)
+
+        manifest = indexer.load_manifest()
+        self.assertEqual(manifest.files["src/alpha.py"].chunk_ids, [])
+
+    def test_repository_identity_and_revision_verification(self):
+        indexer = IncrementalIndexer(self.repo_dir, cache_dir=self.cache_dir)
+        indexer.index()
+
+        manifest = indexer.load_manifest()
+        self.assertIsNotNone(manifest)
+        self.assertTrue(len(manifest.repository_id) > 0)
+        self.assertEqual(manifest.repository_path, self.repo_dir.as_posix())
+
+        # Attempt to load this manifest using an indexer targeting a DIFFERENT repo
+        other_repo = tempfile.TemporaryDirectory()
+        mismatched_indexer = IncrementalIndexer(Path(other_repo.name), cache_dir=self.cache_dir)
+
+        # Must detect repository identity mismatch and refuse to reuse the cache
+        self.assertIsNone(mismatched_indexer.load_manifest())
+        other_repo.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
