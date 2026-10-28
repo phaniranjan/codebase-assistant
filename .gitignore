@@ -1,0 +1,39 @@
+# Virtual environment
+.venv/
+venv/
+env/
+deepeval_venv/
+
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing and linting
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+test_execution*.log
+
+# Codebase Assistant index & cache data
+.codebase_assistant/
+data/indexes/
+data/cache/
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa
+credentials.json
