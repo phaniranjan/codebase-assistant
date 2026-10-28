@@ -27,6 +27,9 @@ from codebase_assistant.embeddings.manager import EmbeddingManager
 from codebase_assistant.embeddings.mock import MockEmbeddingProvider
 from codebase_assistant.ingestion.indexer import IncrementalIndexer
 from codebase_assistant.ingestion.scanner import RepositoryScanner
+from codebase_assistant.llm.client import GeminiClient
+from codebase_assistant.llm.mock_client import MockGeminiClient
+from codebase_assistant.llm.qa import CodebaseQAEngine
 from codebase_assistant.retrieval.context_assembler import ContextAssembler
 from codebase_assistant.retrieval.hybrid import HybridRetriever
 
@@ -314,6 +317,127 @@ def search(
 
     print(f"\n--- Assembled Context (Estimated {assembled.estimated_tokens}/{budget} tokens, {len(assembled.included_chunks)} included) ---")
     print(assembled.formatted_text)
+
+
+@main.command(name="ask")
+@click.argument("question")
+@click.option("--repo-path", default=".", type=click.Path(exists=True), help="Target repository path.")
+@click.option(
+    "--mode",
+    default="hybrid",
+    type=click.Choice(["hybrid", "dense_only", "sparse_only"], case_sensitive=False),
+    help="Retrieval mode.",
+)
+@click.option(
+    "--provider",
+    "provider_type",
+    default="gemini",
+    type=click.Choice(["gemini", "mock"], case_sensitive=False),
+    help="Provider for LLM reasoning and embeddings.",
+)
+@click.option("--top-k", default=5, type=int, help="Number of code chunks to retrieve.")
+@click.option("--temperature", default=0.2, type=float, help="Sampling temperature.")
+@click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
+@click.option("--stream/--no-stream", default=False, help="Stream the answer as it is generated.")
+@click.option("--cache-dir", default=None, help="Custom cache directory.")
+def ask(
+    question: str,
+    repo_path: str,
+    mode: str,
+    provider_type: str,
+    top_k: int,
+    temperature: float,
+    budget: int,
+    stream: bool,
+    cache_dir: str | None,
+):
+    """Answer developer questions grounded in the indexed repository."""
+    target_repo = Path(repo_path).resolve()
+    cache = Path(cache_dir).resolve() if cache_dir else target_repo / get_settings().cache_dir
+
+    indexer = IncrementalIndexer(target_repo, cache_dir=cache)
+    chunks = indexer.load_chunks()
+
+    if not chunks:
+        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.")
+        return
+
+    # Initialize Embedding Provider
+    if provider_type.lower() == "mock":
+        emb_provider = MockEmbeddingProvider()
+        llm_client = MockGeminiClient()
+    else:
+        try:
+            emb_provider = GeminiEmbeddingProvider()
+            llm_client = GeminiClient()
+        except ValueError as e:
+            print(f"[Warning] {e}")
+            print("Falling back to Mock providers for offline execution.")
+            emb_provider = MockEmbeddingProvider()
+            llm_client = MockGeminiClient()
+
+    # Load Vector Store
+    manager = EmbeddingManager(target_repo, cache_dir=cache, provider=emb_provider)
+    vector_store = manager.load_vector_store()
+
+    if mode in ("hybrid", "dense_only") and vector_store.count() == 0:
+        print("Notice: Vector store is empty. Generating embeddings first...")
+        manager.sync()
+        vector_store = manager.load_vector_store()
+
+    try:
+        retriever = HybridRetriever(
+            chunks=chunks,
+            vector_store=vector_store,
+            embedding_provider=emb_provider,
+        )
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    qa_engine = CodebaseQAEngine(
+        retriever=retriever,
+        llm_client=llm_client,
+        default_budget=budget,
+    )
+
+    print_info("Model", llm_client.model_name)
+    print_info("Retrieval Mode", mode.upper())
+    print(f"\nQuestion: {question}\n")
+
+    if stream:
+        print("Answer: ", end="", flush=True)
+        for chunk in qa_engine.ask_stream(
+            query=question,
+            top_k=top_k,
+            mode=mode.lower(),
+            temperature=temperature,
+            budget=budget,
+        ):
+            print(chunk, end="", flush=True)
+        print("\n")
+    else:
+        resp = qa_engine.ask(
+            query=question,
+            top_k=top_k,
+            mode=mode.lower(),
+            temperature=temperature,
+            budget=budget,
+        )
+
+        print("--- Answer ---")
+        print(resp.answer)
+
+        if resp.citations:
+            print("\n--- Source Citations ---")
+            for c in resp.citations:
+                print(f"  • {c.format_citation()}")
+
+        print(
+            f"\n[Retrieved: {resp.retrieved_chunks_count} chunks, "
+            f"Assembled: {resp.assembled_chunks_count} chunks, "
+            f"Prompt Tokens: ~{resp.context_tokens}]"
+        )
 
 
 if __name__ == "__main__":

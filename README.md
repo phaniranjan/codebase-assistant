@@ -71,10 +71,10 @@ flowchart TD
 | **Logical Chunker** | ✅ Implemented | Enclosing symbol scope preservation, line numbers, deterministic IDs, oversized chunk sub-splitting. |
 | **Incremental Indexer** | ✅ Implemented | SHA-256 change detection, stale chunk eviction for modified/deleted/renamed files, repo identity checks. |
 | **Local Cache Storage** | ✅ Implemented | Local `.codebase_assistant/` manifest, chunks, and vector store. |
-| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, and hybrid search. |
+| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`, `ask`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, hybrid search, and repository Q&A. |
 | **Embeddings & Vector Store** | ✅ Implemented | Pluggable providers (Gemini & deterministic mock), local cosine vector store. |
 | **BM25 & Hybrid Retriever** | ✅ Implemented | CodeTokenizer, Okapi BM25 keyword search, Reciprocal Rank Fusion (RRF), context assembler. |
-| **Gemini Integration & Q&A Agent** | ⏳ Planned (Phase 3) | Grounded prompt building and citation-backed repository question answering. |
+| **Gemini Integration & Grounded Q&A** | ✅ Implemented | Grounded prompt building, prompt injection barrier, citation validation, GeminiClient & QA engine. |
 | **Code & Test Proposals** | ⏳ Planned (Phase 4) | Unified git diff generation and pytest test generation. |
 | **Controlled Tools & Execution Sandbox** | ⏳ Planned (Phase 5) | Policy engine, permissions, and isolated command execution. |
 | **Evaluation Suite & Benchmarks** | ⏳ Planned (Phase 6) | Golden dataset benchmarks for retrieval and groundedness. |
@@ -164,6 +164,19 @@ python -m codebase_assistant.cli search "BM25Retriever implementation" /path/to/
 # Dense-only or sparse-only search
 python -m codebase_assistant.cli search "calculate IDF scores" /path/to/repository --mode dense_only
 python -m codebase_assistant.cli search "class RAGPipeline" /path/to/repository --mode sparse_only --top-k 5
+```
+
+### 6. Repository Q&A Reasoning
+Ask technical questions grounded strictly in the repository code with source citations:
+```bash
+# Grounded repository Q&A using Gemini
+python -m codebase_assistant.cli ask "How does the RAG pipeline handle prompt grounding?" /path/to/repository
+
+# Streaming response with custom top-k and budget
+python -m codebase_assistant.cli ask "Explain the BM25 scoring algorithm" /path/to/repository --stream --top-k 3
+
+# Completely offline testing with mock provider (zero API keys needed)
+python -m codebase_assistant.cli ask "How does user authentication work?" /path/to/repository --provider mock
 ```
 
 ---
