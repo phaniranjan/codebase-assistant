@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+from pathlib import Path
 from typing import List, Optional
 
 from codebase_assistant.ingestion.models import ChunkType, CodeChunk
@@ -40,8 +41,9 @@ class LogicalChunker:
 
     @staticmethod
     def generate_chunk_id(file_path: str, symbol_name: str, start_line: int) -> str:
-        """Create a deterministic unique chunk ID."""
-        raw_key = f"{file_path}:{symbol_name}:{start_line}"
+        """Create a deterministic unique chunk ID using cross-platform normalized POSIX paths."""
+        norm_path = Path(file_path).as_posix()
+        raw_key = f"{norm_path}:{symbol_name}:{start_line}"
         digest = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16]
         safe_sym = symbol_name.replace(".", "_") if symbol_name else "chunk"
         return f"{safe_sym}_{digest}"
@@ -57,13 +59,15 @@ class LogicalChunker:
         if not content.strip():
             return []
 
+        norm_path = Path(rel_file_path).as_posix()
+
         # 1. Parse into structured symbols
         if language == "python":
-            symbols = self.python_parser.parse_source(content, file_path=rel_file_path)
+            symbols = self.python_parser.parse_source(content, file_path=norm_path)
         elif language == "markdown":
-            symbols = self.markdown_parser.parse_source(content, file_path=rel_file_path)
+            symbols = self.markdown_parser.parse_source(content, file_path=norm_path)
         else:
-            symbols = self.config_parser.parse_source(content, file_path=rel_file_path)
+            symbols = self.config_parser.parse_source(content, file_path=norm_path)
 
         # 2. Convert symbols to CodeChunks
         chunks: List[CodeChunk] = []
@@ -73,17 +77,17 @@ class LogicalChunker:
             # Check if chunk exceeds max characters and needs sub-chunking
             if len(sym.content) > self.max_chunk_chars:
                 sub_chunks = self._subdivide_large_symbol(
-                    sym, rel_file_path, language, chunk_type, source_revision
+                    sym, norm_path, language, chunk_type, source_revision
                 )
                 chunks.extend(sub_chunks)
             else:
-                chunk_id = self.generate_chunk_id(rel_file_path, sym.name, sym.start_line)
+                chunk_id = self.generate_chunk_id(norm_path, sym.name, sym.start_line)
                 content_hash = hashlib.sha256(sym.content.encode("utf-8")).hexdigest()
 
                 chunks.append(
                     CodeChunk(
                         chunk_id=chunk_id,
-                        file_path=rel_file_path,
+                        file_path=norm_path,
                         content=sym.content,
                         language=language,
                         chunk_type=chunk_type,

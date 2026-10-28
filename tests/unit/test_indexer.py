@@ -165,7 +165,8 @@ class TestIncrementalIndexer(unittest.TestCase):
         self.file_a.write_text("def modified_during_crash():\n    pass\n", encoding="utf-8")
 
         report = indexer.index()
-        self.assertIn("src/alpha.py", report.modified_files)
+        self.assertIn("src/alpha.py", report.failed_files)
+        self.assertIn("Simulated unrecoverable AST parser crash", report.failed_files["src/alpha.py"])
 
         # Ensure old alpha chunks were purged and no stale chunks appear current
         chunks = indexer.load_chunks()

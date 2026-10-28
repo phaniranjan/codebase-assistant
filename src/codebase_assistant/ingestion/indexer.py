@@ -4,8 +4,10 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+import tempfile
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -32,13 +34,19 @@ class IndexingReport(BaseModel):
     modified_files: List[str] = Field(default_factory=list)
     deleted_files: List[str] = Field(default_factory=list)
     unchanged_files: List[str] = Field(default_factory=list)
+    failed_files: Dict[str, str] = Field(default_factory=dict)  # rel_path -> error message
     total_files: int = 0
     total_chunks: int = 0
     rebuilt: bool = False
 
     def is_fresh(self) -> bool:
-        """Return True if no files were added, modified, or deleted."""
-        return not (self.added_files or self.modified_files or self.deleted_files)
+        """Return True if no files were added, modified, deleted, or failed."""
+        return not (
+            self.added_files
+            or self.modified_files
+            or self.deleted_files
+            or self.failed_files
+        )
 
 
 class IncrementalIndexer:
@@ -122,26 +130,46 @@ class IncrementalIndexer:
             logger.warning("Could not read chunk store at %s: %s.", self.chunks_path, e)
             return {}
 
+    @staticmethod
+    def _atomic_write_json(target_path: Path, data: Any) -> None:
+        """Write JSON data to a temp file in the same directory, then atomically replace.
+
+        This guarantees that process interruption or crashes during disk writing
+        cannot leave a partially written or corrupted cache.
+        """
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
+        try:
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(str(temp_file), str(target_path))
+        except BaseException:
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except OSError:
+                    pass
+            raise
+
     def save_index(self, manifest: IndexManifest, chunks: Dict[str, CodeChunk]) -> None:
-        """Persist manifest and chunks to local cache directory."""
+        """Persist manifest and chunks to local cache directory with atomic write protection."""
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
             os.makedirs(str(self.cache_dir), exist_ok=True)
 
-        # 1. Save chunks
-        chunks_dict = {k: v.model_dump() for k, v in chunks.items()}
-        with open(self.chunks_path, "w", encoding="utf-8") as f:
-            json.dump(chunks_dict, f, indent=2)
-
-        # 2. Save manifest
         manifest.file_count = len(manifest.files)
         manifest.chunk_count = len(chunks)
-        with open(self.manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest.model_dump(), f, indent=2)
+
+        # 1. Atomically save chunks
+        chunks_dict = {k: v.model_dump() for k, v in chunks.items()}
+        self._atomic_write_json(self.chunks_path, chunks_dict)
+
+        # 2. Atomically save manifest
+        self._atomic_write_json(self.manifest_path, manifest.model_dump())
 
         logger.info(
-            "Saved index to %s (%d files, %d chunks)",
+            "Saved index atomically to %s (%d files, %d chunks)",
             self.cache_dir,
             manifest.file_count,
             manifest.chunk_count,
@@ -176,6 +204,7 @@ class IncrementalIndexer:
         modified_files: List[str] = []
         unchanged_files: List[str] = []
         deleted_files: List[str] = sorted(list(manifest_set - scanned_set))
+        failed_files: Dict[str, str] = {}
 
         # 1. Evict stale chunks from deleted files
         for del_path in deleted_files:
@@ -186,7 +215,7 @@ class IncrementalIndexer:
 
         # 2. Process scanned files
         for rel_path in scanned_files:
-            posix_path = rel_path.as_posix()
+            posix_path = Path(rel_path).as_posix()
             abs_path = self.repository_path / rel_path
             current_hash = self.scanner.compute_file_hash(abs_path)
             stat = abs_path.stat()
@@ -196,10 +225,14 @@ class IncrementalIndexer:
 
             if prev_meta is None or rebuild:
                 # New or rebuild
-                added_files.append(posix_path)
-                new_chunk_ids = self._index_single_file(
+                new_chunk_ids, err = self._index_single_file(
                     abs_path, posix_path, lang, revision.commit_sha, chunks
                 )
+                if err:
+                    failed_files[posix_path] = err
+                else:
+                    added_files.append(posix_path)
+
                 manifest.files[posix_path] = FileMetadata(
                     file_path=posix_path,
                     file_hash=current_hash,
@@ -210,14 +243,18 @@ class IncrementalIndexer:
                     chunk_ids=new_chunk_ids,
                 )
             elif prev_meta.file_hash != current_hash:
-                # Modified file: purge old chunks and add new
-                modified_files.append(posix_path)
+                # Modified file: purge old chunks first to guarantee no stale chunks remain
                 for old_id in prev_meta.chunk_ids:
                     chunks.pop(old_id, None)
 
-                new_chunk_ids = self._index_single_file(
+                new_chunk_ids, err = self._index_single_file(
                     abs_path, posix_path, lang, revision.commit_sha, chunks
                 )
+                if err:
+                    failed_files[posix_path] = err
+                else:
+                    modified_files.append(posix_path)
+
                 manifest.files[posix_path] = FileMetadata(
                     file_path=posix_path,
                     file_hash=current_hash,
@@ -241,6 +278,7 @@ class IncrementalIndexer:
             modified_files=modified_files,
             deleted_files=deleted_files,
             unchanged_files=unchanged_files,
+            failed_files=failed_files,
             total_files=len(manifest.files),
             total_chunks=len(chunks),
             rebuilt=rebuild,
@@ -253,14 +291,18 @@ class IncrementalIndexer:
         lang: str,
         revision_sha: Optional[str],
         chunks_store: Dict[str, CodeChunk],
-    ) -> List[str]:
-        """Read, chunk, and store chunks for one file."""
+    ) -> Tuple[List[str], Optional[str]]:
+        """Read, chunk, and store chunks for one file.
+
+        Returns (chunk_ids, error_message).
+        """
         try:
             with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
         except Exception as e:
-            logger.error("Failed to read file %s: %s", abs_path, e)
-            return []
+            err_msg = f"ReadError: {type(e).__name__}: {e}"
+            logger.error("Failed to read file %s: %s", abs_path, err_msg)
+            return [], err_msg
 
         try:
             file_chunks = self.chunker.chunk_file(
@@ -270,12 +312,13 @@ class IncrementalIndexer:
                 source_revision=revision_sha,
             )
         except Exception as e:
-            logger.error("Failed to chunk file %s: %s", posix_path, e)
-            return []
+            err_msg = f"ParseError: {type(e).__name__}: {e}"
+            logger.error("Failed to chunk file %s: %s", posix_path, err_msg, exc_info=True)
+            return [], err_msg
 
         chunk_ids: List[str] = []
         for c in file_chunks:
             chunks_store[c.chunk_id] = c
             chunk_ids.append(c.chunk_id)
 
-        return chunk_ids
+        return chunk_ids, None

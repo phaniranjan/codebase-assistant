@@ -100,6 +100,7 @@ def index(repo_path: str, rebuild: bool, cache_dir: str | None):
         ("Added Files", str(len(report.added_files))),
         ("Modified Files", str(len(report.modified_files))),
         ("Deleted Files", str(len(report.deleted_files))),
+        ("Failed Files", str(len(report.failed_files))),
         ("Unchanged Files", str(len(report.unchanged_files))),
         ("Total Indexed Files", str(report.total_files)),
         ("Total Chunks", str(report.total_chunks)),
@@ -116,6 +117,11 @@ def index(repo_path: str, rebuild: bool, cache_dir: str | None):
         print("\n--- Indexing Results ---")
         for k, v in metrics:
             print(f"  {k:22}: {v}")
+
+    if report.failed_files:
+        print("\n--- Indexing Failures ---")
+        for fpath, err in report.failed_files.items():
+            print(f"  [ERROR] {fpath}: {err}")
 
 
 @main.command(name="inspect-chunks")
