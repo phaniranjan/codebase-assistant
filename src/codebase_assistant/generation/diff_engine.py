@@ -120,14 +120,10 @@ class DiffEngine:
         diff_lines = unified_diff.splitlines()
         orig_lines = original_content.splitlines()
 
-        # If it's a creation of a new file from /dev/null
+        # Check if this patch creates a new file from /dev/null
         is_new_file = any(line.startswith("--- /dev/null") for line in diff_lines[:5])
-        if is_new_file and not original_content.strip():
-            added_lines = [
-                line[1:] for line in diff_lines
-                if line.startswith("+") and not line.startswith("+++")
-            ]
-            return "\n".join(added_lines) + ("\n" if added_lines else "")
+        if is_new_file and original_content.strip():
+            raise ValueError("Cannot apply new-file patch (--- /dev/null) to non-empty original content")
 
         hunk_header_re = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
         hunks = []
@@ -161,11 +157,26 @@ class DiffEngine:
         if current_hunk:
             hunks.append(current_hunk)
 
+        if is_new_file and not hunks:
+            raise ValueError("Malformed new-file patch: missing hunk header (@@ ... @@)")
+
         if not hunks:
             return original_content
 
-        # Hunk validation: verify line counts match header specifications
+        # Hunk validation: verify line counts and structure
         for hunk in hunks:
+            if is_new_file:
+                if hunk["old_count"] != 0:
+                    raise ValueError(
+                        f"Malformed new-file patch at diff line {hunk['header_line']}: "
+                        f"header specifies old_count={hunk['old_count']} but source is /dev/null"
+                    )
+                if any(l.startswith(("-", " ")) for l in hunk["lines"]):
+                    raise ValueError(
+                        f"Malformed new-file patch at diff line {hunk['header_line']}: "
+                        f"cannot delete or match context lines for /dev/null source"
+                    )
+
             actual_old = sum(1 for l in hunk["lines"] if l.startswith((" ", "-")))
             actual_new = sum(1 for l in hunk["lines"] if l.startswith((" ", "+")))
             if actual_old != hunk["old_count"]:
@@ -183,19 +194,26 @@ class DiffEngine:
         orig_idx = 0
 
         for hunk in hunks:
-            target_old_start = max(0, hunk["old_start"] - 1)
+            if hunk["old_count"] == 0:
+                # For pure insertion (old_count == 0), hunk['old_start'] is the line after which
+                # lines are inserted (or 0 if inserted before line 1)
+                target_old_start = hunk["old_start"]
+                if target_old_start > len(orig_lines):
+                    raise ValueError(
+                        f"Patch hunk insertion position {hunk['old_start']} exceeds file length {len(orig_lines)}"
+                    )
+            else:
+                target_old_start = max(0, hunk["old_start"] - 1)
+                if target_old_start > len(orig_lines):
+                    raise ValueError(
+                        f"Patch hunk start line {hunk['old_start']} exceeds file length {len(orig_lines)}"
+                    )
 
             # Check for overlapping or out-of-order hunks
             if orig_idx > target_old_start:
                 raise ValueError(
                     f"Malformed patch: overlapping or out-of-order hunk at line {hunk['old_start']} "
                     f"(current position is line {orig_idx + 1})"
-                )
-
-            # Check if hunk start exceeds file length
-            if target_old_start > len(orig_lines) and hunk["old_count"] > 0:
-                raise ValueError(
-                    f"Patch hunk start line {hunk['old_start']} exceeds file length {len(orig_lines)}"
                 )
 
             # Copy unchanged lines leading up to this hunk
@@ -242,6 +260,8 @@ class DiffEngine:
             orig_idx += 1
 
         output = "\n".join(result_lines)
+        if not output and not original_content:
+            return ""
         if original_content.endswith("\n") or not original_content:
             output += "\n"
         return output

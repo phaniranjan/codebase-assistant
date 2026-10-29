@@ -170,6 +170,125 @@ class TestDiffEngine(unittest.TestCase):
                 DiffEngine.validate_target_path(repo_path, "link_secret.py")
             self.assertIn("resolves outside repository via symlink", str(ctx.exception))
 
+    def test_apply_new_file_diff_mismatched_hunk_count_rejected(self):
+        diff = (
+            "--- /dev/null\n"
+            "+++ b/new.py\n"
+            "@@ -0,0 +1,5 @@\n"
+            "+line1\n"
+            "+line2\n"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            DiffEngine.apply_diff_in_memory("", diff)
+        self.assertIn("header specifies 5 new lines, but hunk contains 2", str(ctx.exception))
+
+    def test_apply_new_file_diff_with_context_or_deletion_rejected(self):
+        # Case A: Header claims old lines from /dev/null
+        diff_old = (
+            "--- /dev/null\n"
+            "+++ b/new.py\n"
+            "@@ -0,1 +1,2 @@\n"
+            "-old\n"
+            "+new\n"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            DiffEngine.apply_diff_in_memory("", diff_old)
+        self.assertIn("header specifies old_count=1 but source is /dev/null", str(ctx.exception))
+
+        # Case B: Header claims old_count=0 but lines contain deletion or context
+        diff_del = (
+            "--- /dev/null\n"
+            "+++ b/new.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            "-old\n"
+            "+new\n"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            DiffEngine.apply_diff_in_memory("", diff_del)
+        self.assertIn("cannot delete or match context lines for /dev/null source", str(ctx.exception))
+
+    def test_apply_new_file_diff_missing_hunk_header_rejected(self):
+        diff = (
+            "--- /dev/null\n"
+            "+++ b/new.py\n"
+            "+just added line without header\n"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            DiffEngine.apply_diff_in_memory("", diff)
+        self.assertTrue(
+            "Malformed" in str(ctx.exception),
+            f"Expected malformed patch error, got: {ctx.exception}",
+        )
+
+    def test_apply_new_file_diff_on_non_empty_original_rejected(self):
+        diff = (
+            "--- /dev/null\n"
+            "+++ b/new.py\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+line\n"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            DiffEngine.apply_diff_in_memory("existing content\n", diff)
+        self.assertIn("Cannot apply new-file patch (--- /dev/null) to non-empty original content", str(ctx.exception))
+
+    def test_apply_insertion_hunk_after_line(self):
+        original = "line1\nline2\nline3\n"
+        diff = (
+            "--- a/file.py\n"
+            "+++ b/file.py\n"
+            "@@ -1,0 +2,1 @@\n"
+            "+inserted_after_line1\n"
+        )
+        patched = DiffEngine.apply_diff_in_memory(original, diff)
+        self.assertEqual(patched, "line1\ninserted_after_line1\nline2\nline3\n")
+
+    def test_apply_insertion_hunk_before_first_line(self):
+        original = "line1\nline2\nline3\n"
+        diff = (
+            "--- a/file.py\n"
+            "+++ b/file.py\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+inserted_at_top\n"
+        )
+        patched = DiffEngine.apply_diff_in_memory(original, diff)
+        self.assertEqual(patched, "inserted_at_top\nline1\nline2\nline3\n")
+
+    def test_apply_insertion_hunk_at_eof(self):
+        original = "line1\nline2\nline3\n"
+        diff = (
+            "--- a/file.py\n"
+            "+++ b/file.py\n"
+            "@@ -3,0 +4,1 @@\n"
+            "+inserted_at_end\n"
+        )
+        patched = DiffEngine.apply_diff_in_memory(original, diff)
+        self.assertEqual(patched, "line1\nline2\nline3\ninserted_at_end\n")
+
+    def test_apply_multiple_insertion_hunks(self):
+        original = "alpha\nbeta\ngamma\n"
+        diff = (
+            "--- a/file.py\n"
+            "+++ b/file.py\n"
+            "@@ -1,0 +2,1 @@\n"
+            "+after_alpha\n"
+            "@@ -2,0 +4,1 @@\n"
+            "+after_beta\n"
+        )
+        patched = DiffEngine.apply_diff_in_memory(original, diff)
+        self.assertEqual(patched, "alpha\nafter_alpha\nbeta\nafter_beta\ngamma\n")
+
+    def test_apply_insertion_hunk_position_exceeds_length_rejected(self):
+        original = "line1\nline2\n"
+        diff = (
+            "--- a/file.py\n"
+            "+++ b/file.py\n"
+            "@@ -5,0 +6,1 @@\n"
+            "+too_far\n"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            DiffEngine.apply_diff_in_memory(original, diff)
+        self.assertIn("Patch hunk insertion position 5 exceeds file length 2", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
