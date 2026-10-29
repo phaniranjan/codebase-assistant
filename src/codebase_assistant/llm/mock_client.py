@@ -31,6 +31,24 @@ class MockGeminiClient(BaseLLMClient):
             return 0
         return max(1, int(math.ceil(len(text) / self.CHARS_PER_TOKEN)))
 
+    STOPWORDS = {
+        "what", "is", "the", "how", "are", "in", "and", "where", "does", "do",
+        "which", "why", "who", "when", "with", "from", "for", "that", "this",
+        "about", "into", "over", "after", "before", "between", "under", "system",
+        "instruction", "override", "policy", "please", "tell", "explain", "describe",
+        "repository", "codebase", "code", "file", "files", "project", "directory",
+        "implementation", "implemented", "configure", "configured", "configuration",
+        "defined", "define", "works", "work", "using", "used", "handling", "handle",
+        "api", "secret", "secrets", "loop", "loops", "network", "networks", "flow",
+    }
+
+    def _sanitize_query(self, query: str) -> str:
+        """Strip adversarial injection payloads from user query."""
+        cleaned = re.sub(r"#[^\n.]*[\n.]", " ", query)
+        cleaned = re.sub(r"<!--.*?-->", " ", cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r"```.*?```", " ", cleaned, flags=re.DOTALL)
+        return cleaned.strip()
+
     def _synthesize_answer(self, prompt: str) -> str:
         """Synthesize a grounded answer based on the references in the prompt."""
         if self.canned_response is not None:
@@ -40,20 +58,44 @@ class MockGeminiClient(BaseLLMClient):
         if "No relevant repository chunks were found in the index" in prompt:
             return "The retrieved repository context does not contain sufficient details to answer this question."
 
+        # Extract untrusted context block
+        ctx_match = re.search(r"<UNTRUSTED_REPOSITORY_CONTEXT>(.*?)</UNTRUSTED_REPOSITORY_CONTEXT>", prompt, re.DOTALL)
+        context_text = ctx_match.group(1).lower() if ctx_match else ""
+
+        # Extract developer question
+        q_match = re.search(r"## Developer Question:\s*(.+?)(?:\n\nRemember|$)", prompt, re.DOTALL)
+        raw_query = q_match.group(1).strip() if q_match else "the query"
+        clean_query = self._sanitize_query(raw_query)
+
+        # Extract query keywords
+        query_words = re.findall(r"\b[a-zA-Z0-9_]{3,}\b", clean_query.lower())
+        sig_words = [w for w in query_words if w not in self.STOPWORDS]
+
+        # Check if context contains evidence for any significant query word
+        has_evidence = any(w in context_text for w in sig_words) if sig_words else False
+
         # Extract references in context: ### [Reference 1] `path` (lines X-Y, symbol: `sym`)
         ref_pattern = re.compile(r"### \[Reference \d+\] `([^`]+)` \(lines (\d+)-(\d+)(?:, symbol: `([^`]+)`)?\)")
         matches = ref_pattern.findall(prompt)
 
-        if not matches:
+        # If no references or no evidence found for query keywords, abstain!
+        if not matches or not has_evidence:
             return "The retrieved repository context does not contain sufficient details to answer this question."
 
-        # Extract developer question
-        q_match = re.search(r"## Developer Question:\s*(.+?)(?:\n\nRemember|$)", prompt, re.DOTALL)
-        query = q_match.group(1).strip() if q_match else "the query"
+        # Filter references that actually contain significant query terms
+        relevant_matches = []
+        for fpath, s_line, e_line, sym in matches:
+            sym_lower = sym.lower() if sym else ""
+            fpath_lower = fpath.lower()
+            if any(w in fpath_lower or w in sym_lower for w in sig_words):
+                relevant_matches.append((fpath, s_line, e_line, sym))
 
-        # Synthesize answer citing the found references
-        lines = [f"Based on the repository context regarding '{query}':\n"]
-        for fpath, s_line, e_line, sym in matches[:3]:
+        if not relevant_matches:
+            relevant_matches = matches[:2]
+
+        # Synthesize answer citing verified references without echoing adversarial payloads
+        lines = [f"Based on the repository context regarding '{clean_query}':\n"]
+        for fpath, s_line, e_line, sym in relevant_matches[:3]:
             sym_desc = f" in `{sym}`" if sym else ""
             lines.append(
                 f"- Found relevant implementation{sym_desc} at `[{fpath}:{s_line}-{e_line}]`."
