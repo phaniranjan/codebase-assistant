@@ -135,6 +135,56 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(res_ask.exit_code, 0)
             self.assertIn("Falling back to Mock providers", res_ask.output)
 
+    def test_evaluate_cli_command_offline_and_reports(self):
+        # Create a small sample dataset JSON
+        sample_dataset = self.repo_dir / "test_dataset.json"
+        sample_dataset.write_text("""{
+  "version": "1.0.0",
+  "target_repository": "test-repo",
+  "cases": [
+    {
+      "id": "c1",
+      "question": "How does auth work?",
+      "category": "symbol_lookup",
+      "is_answerable": true,
+      "expected_files": ["src/auth.py"],
+      "expected_symbols": ["authenticate_user"]
+    }
+  ]
+}""", encoding="utf-8")
+
+        json_out = self.repo_dir / "report.json"
+        md_out = self.repo_dir / "report.md"
+
+        res = self.runner.invoke(
+            main,
+            [
+                "evaluate",
+                str(self.repo_dir),
+                "--dataset", str(sample_dataset),
+                "--mode", "hybrid",
+                "--top-k", "2",
+                "--output-json", str(json_out),
+                "--output-markdown", str(md_out),
+            ],
+        )
+        self.assertEqual(res.exit_code, 0, res.output)
+        self.assertIn("Quality Gate Status", res.output)
+        self.assertTrue(json_out.is_file())
+        self.assertTrue(md_out.is_file())
+
+    def test_evaluate_cli_live_fails_without_key(self):
+        sample_dataset = self.repo_dir / "test_dataset.json"
+        sample_dataset.write_text("{\"cases\": []}", encoding="utf-8")
+
+        with patch.dict(os.environ, {}, clear=True):
+            res = self.runner.invoke(
+                main,
+                ["evaluate", str(self.repo_dir), "--dataset", str(sample_dataset), "--live"],
+            )
+            self.assertEqual(res.exit_code, 1)
+            self.assertIn("GEMINI_API_KEY environment variable is not set", res.output)
+
 
 if __name__ == "__main__":
     unittest.main()

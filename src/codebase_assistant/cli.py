@@ -25,6 +25,9 @@ from codebase_assistant.config import get_settings
 from codebase_assistant.embeddings.gemini import GeminiEmbeddingProvider
 from codebase_assistant.embeddings.manager import EmbeddingManager
 from codebase_assistant.embeddings.mock import MockEmbeddingProvider
+from codebase_assistant.evaluation.dataset import GoldenDataset
+from codebase_assistant.evaluation.report import EvaluationReporter
+from codebase_assistant.evaluation.runner import EvaluationRunner
 from codebase_assistant.ingestion.indexer import IncrementalIndexer
 from codebase_assistant.ingestion.scanner import RepositoryScanner
 from codebase_assistant.llm.client import GeminiClient
@@ -502,6 +505,161 @@ def ask(
             f"Assembled: {resp.assembled_chunks_count} chunks, "
             f"Prompt Tokens: ~{resp.context_tokens}]"
         )
+
+
+@main.command(name="evaluate")
+@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
+@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.option("--dataset", "dataset_path", default="data/golden_dataset.json", help="Path to golden evaluation dataset JSON.")
+@click.option(
+    "--mode",
+    default="hybrid",
+    type=click.Choice(["hybrid", "dense_only", "sparse_only", "all"], case_sensitive=False),
+    help="Retrieval mode to evaluate (or 'all' to compare modes).",
+)
+@click.option("--top-k", default=5, type=int, help="Number of chunks to retrieve per question.")
+@click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
+@click.option("--live", is_flag=True, default=False, help="Explicitly enable live Gemini evaluation (requires GEMINI_API_KEY).")
+@click.option("--fail-under", is_flag=True, default=False, help="Enforce quality gates and exit with code 1 if gates fail.")
+@click.option("--output-json", default=None, help="File path to save JSON evaluation report.")
+@click.option("--output-markdown", default=None, help="File path to save human-readable Markdown summary report.")
+@click.option("--cache-dir", default=None, help="Custom cache directory.")
+def evaluate(
+    repo_path: str | None,
+    repo_path_opt: str | None,
+    dataset_path: str,
+    mode: str,
+    top_k: int,
+    budget: int,
+    live: bool,
+    fail_under: bool,
+    output_json: str | None,
+    output_markdown: str | None,
+    cache_dir: str | None,
+):
+    """Run reproducible RAG evaluation benchmark and quality gate checks."""
+    target_repo = Path(repo_path_opt or repo_path or ".").resolve()
+    # Read-only protection: default evaluation cache to local directory outside target repository
+    cache = Path(cache_dir).resolve() if cache_dir else Path(".codebase_assistant/eval_cache").resolve()
+
+    print_info("Target Repository", str(target_repo))
+    print_info("Evaluation Mode", "LIVE GEMINI" if live else "OFFLINE MOCK")
+    print_info("Dataset", dataset_path)
+
+    # 1. Load Dataset
+    d_path = Path(dataset_path).resolve()
+    if not d_path.is_file():
+        # Check relative to target_repo or current dir
+        alt_path = target_repo / dataset_path
+        if alt_path.is_file():
+            d_path = alt_path
+        else:
+            print(f"Error: Golden dataset not found at {d_path}", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        dataset = GoldenDataset.load_from_file(d_path)
+    except Exception as e:
+        print(f"Error: Failed to load golden dataset: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print_info("Loaded Cases", f"{len(dataset.cases)} (Version: {dataset.version})")
+
+    # 2. Initialize Runner
+    try:
+        runner = EvaluationRunner(
+            repository_path=target_repo,
+            cache_dir=cache,
+            is_live=live,
+        )
+    except Exception as e:
+        print(f"\n[Error] {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # 3. Execute Evaluation (Single mode or 'all' comparison)
+    modes_to_run = ["hybrid", "dense_only", "sparse_only"] if mode.lower() == "all" else [mode.lower()]
+    reports = []
+
+    for m in modes_to_run:
+        print_info(f"\nRunning Evaluation ({m.upper()}, Top-{top_k})...")
+        report = runner.run(
+            dataset=dataset,
+            mode=m,  # type: ignore
+            top_k=top_k,
+            budget=budget,
+        )
+        reports.append(report)
+
+        # Print Gate Summary
+        status_str = "[bold green]PASSED[/bold green]" if report.quality_gate.passed else "[bold red]FAILED[/bold red]"
+        print(f"\nQuality Gate Status: {status_str}")
+
+        if rich_available and console:
+            # Gate details table
+            gate_table = Table(title=f"Quality Gates ({m.upper()})")
+            gate_table.add_column("Gate Metric", style="cyan")
+            gate_table.add_column("Type", style="dim")
+            gate_table.add_column("Threshold", style="yellow")
+            gate_table.add_column("Actual", style="green")
+            gate_table.add_column("Result", style="bold")
+
+            for g in report.quality_gate.gate_details:
+                res_color = "green" if g.passed else "red"
+                res_txt = "PASS" if g.passed else "FAIL"
+                thresh = f"<= {g.threshold:.2f}" if "unnecessary" in g.gate_name else f">= {g.threshold:.2f}"
+                gate_table.add_row(
+                    g.gate_name,
+                    "Hard" if g.is_hard_gate else "Provisional",
+                    thresh,
+                    f"{g.actual_value:.4f}",
+                    f"[{res_color}]{res_txt}[/{res_color}]",
+                )
+            console.print(gate_table)
+
+            # Category table
+            cat_table = Table(title=f"Category Breakdown ({m.upper()})")
+            cat_table.add_column("Category", style="cyan")
+            cat_table.add_column("Cases", style="dim")
+            cat_table.add_column("Recall@K", style="green")
+            cat_table.add_column("MRR", style="yellow")
+            cat_table.add_column("Hit Rate", style="magenta")
+            cat_table.add_column("Abstention Acc", style="blue")
+
+            for cat_name, cat in report.category_summaries.items():
+                rec_str = f"{cat.avg_file_recall:.4f}" if cat.avg_file_recall is not None else "N/A"
+                cat_table.add_row(
+                    cat_name,
+                    f"{cat.evaluated_cases}/{cat.total_cases}",
+                    rec_str,
+                    f"{cat.avg_file_mrr:.4f}",
+                    f"{cat.avg_file_hit_rate:.4f}",
+                    f"{cat.abstention_accuracy:.4f}",
+                )
+            console.print(cat_table)
+        else:
+            print("\n--- Gate Details ---")
+            for g in report.quality_gate.gate_details:
+                res_txt = "PASS" if g.passed else "FAIL"
+                print(f"  [{res_txt:4}] {g.gate_name:32}: actual={g.actual_value:.4f} (thresh={g.threshold:.2f})")
+
+        # Save Report artifacts for the primary mode
+        if output_json or output_markdown:
+            EvaluationReporter.save_reports(
+                report=report,
+                json_path=output_json,
+                markdown_path=output_markdown,
+            )
+            if output_json:
+                print_info("JSON Report saved to:", str(output_json))
+            if output_markdown:
+                print_info("Markdown Report saved to:", str(output_markdown))
+
+    # Quality Gate exit condition
+    if fail_under:
+        any_failed = any(not r.quality_gate.passed for r in reports)
+        if any_failed:
+            print("\n[Error] Quality gates failed and --fail-under was specified.", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
