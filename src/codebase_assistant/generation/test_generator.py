@@ -72,10 +72,14 @@ class TestProposalGenerator:
 
     def _extract_source_symbols(self, abs_path: Path) -> List[str]:
         """Extract function and class names from target source file."""
-        if not abs_path.is_file():
+        try:
+            validated = DiffEngine.validate_target_path(self.repository_path, str(abs_path))
+        except ValueError:
+            return []
+        if not validated.is_file():
             return []
         try:
-            content = abs_path.read_text(encoding="utf-8")
+            content = validated.read_text(encoding="utf-8")
             tree = ast.parse(content)
             symbols = []
             for node in ast.walk(tree):
@@ -140,13 +144,51 @@ Generate the test suite proposal now:"""
         budget: int = 8192,
     ) -> ProposalResult:
         """Generate targeted test proposal for the given source file."""
-        norm_source = normalize_rel_path(source_file)
-        abs_source = self.repository_path / norm_source
+        # Validate source file path against repository boundary and symlink escape
+        try:
+            abs_source = DiffEngine.validate_target_path(self.repository_path, source_file)
+        except ValueError as e:
+            return ProposalResult(
+                task_description=f"Generate unit tests for '{source_file}'",
+                provider_name=type(self.llm_client).__name__,
+                model_name=getattr(self.llm_client, "model_name", "unknown"),
+                proposals=[],
+                retrieved_chunks_count=0,
+                total_files_affected=0,
+                is_valid=False,
+                verification_summary=f"Path security violation: {str(e)}",
+            )
+
+        if not abs_source.is_file():
+            return ProposalResult(
+                task_description=f"Generate unit tests for '{source_file}'",
+                provider_name=type(self.llm_client).__name__,
+                model_name=getattr(self.llm_client, "model_name", "unknown"),
+                proposals=[],
+                retrieved_chunks_count=0,
+                total_files_affected=0,
+                is_valid=False,
+                verification_summary=f"Source file not found: '{source_file}'",
+            )
+
+        norm_source = abs_source.relative_to(self.repository_path).as_posix()
 
         # 1. Detect framework and test file location
         active_framework = (framework or self._detect_testing_framework()).lower()
         target_test_file = self._determine_target_test_file(norm_source)
-        abs_test_path = DiffEngine.validate_target_path(self.repository_path, target_test_file)
+        try:
+            abs_test_path = DiffEngine.validate_target_path(self.repository_path, target_test_file)
+        except ValueError as e:
+            return ProposalResult(
+                task_description=f"Generate unit tests for '{source_file}'",
+                provider_name=type(self.llm_client).__name__,
+                model_name=getattr(self.llm_client, "model_name", "unknown"),
+                proposals=[],
+                retrieved_chunks_count=0,
+                total_files_affected=0,
+                is_valid=False,
+                verification_summary=f"Path security violation: {str(e)}",
+            )
 
         # 2. Extract source symbols and retrieve context
         symbols = self._extract_source_symbols(abs_source)
@@ -181,7 +223,7 @@ Generate the test suite proposal now:"""
         if reasoning_match:
             reasoning = reasoning_match.group(1).strip()
         else:
-            reasoning = f"Generated unit tests for {norm_source} using {framework}."
+            reasoning = f"Generated unit tests for {norm_source} using {active_framework}."
 
         proposed_code = ""
         code_match = re.search(r"```(?:python|py)?\n(.*?)```", raw_text, re.DOTALL)
@@ -198,16 +240,27 @@ Generate the test suite proposal now:"""
         if not proposed_code.strip() and ("def test_" in raw_text or "class Test" in raw_text):
             proposed_code = raw_text
 
-        # 6. AST Syntax Verification
-        ast_valid, syntax_errors = DiffEngine.validate_ast_syntax(proposed_code, filename=target_test_file)
-
-        # 7. Generate Unified Diff
-        unified_diff = DiffEngine.generate_unified_diff(
-            original_content=original_test_content,
-            proposed_content=proposed_code,
-            file_path=target_test_file,
-            is_new_file=is_new_file,
-        )
+        # 6. AST Syntax Verification & Diff Generation
+        if not proposed_code.strip():
+            ast_valid = False
+            syntax_errors = ["No valid Python test code block was extracted from model response."]
+            unified_diff = ""
+        else:
+            ast_valid, syntax_errors = DiffEngine.validate_ast_syntax(
+                proposed_code,
+                filename=target_test_file,
+                allow_empty=False,
+            )
+            unified_diff = (
+                DiffEngine.generate_unified_diff(
+                    original_content=original_test_content,
+                    proposed_content=proposed_code,
+                    file_path=target_test_file,
+                    is_new_file=is_new_file,
+                )
+                if ast_valid
+                else ""
+            )
 
         # Extract generated test method names
         test_methods = []
@@ -233,7 +286,12 @@ Generate the test suite proposal now:"""
             affected_symbols=test_methods,
         )
 
-        verification_summary = f"AST syntax valid ({len(test_methods)} test cases)" if ast_valid else f"AST syntax errors: {'; '.join(syntax_errors)}"
+        is_proposal_valid = ast_valid and bool(proposed_code.strip())
+        verification_summary = (
+            f"AST syntax valid ({len(test_methods)} test cases)"
+            if is_proposal_valid
+            else f"Test proposal verification failed: {'; '.join(syntax_errors)}"
+        )
 
         token_usage = {
             "prompt_tokens": response.prompt_tokens or 0,
@@ -241,13 +299,13 @@ Generate the test suite proposal now:"""
         } if response.prompt_tokens is not None else None
 
         return ProposalResult(
-            task_description=f"Generate unit tests for '{norm_source}'",
+            task_description=f"Generate unit tests for '{source_file}'",
             provider_name=type(self.llm_client).__name__,
             model_name=getattr(self.llm_client, "model_name", "unknown"),
             proposals=[proposal],
             retrieved_chunks_count=len(search_results),
             total_files_affected=1,
-            is_valid=ast_valid,
+            is_valid=is_proposal_valid,
             verification_summary=verification_summary,
             token_usage=token_usage,
         )

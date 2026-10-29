@@ -1,5 +1,6 @@
 """Unit tests for code and test proposal CLI commands."""
 
+import hashlib
 from pathlib import Path
 import shutil
 import tempfile
@@ -157,6 +158,107 @@ class TestGenerationCLI(unittest.TestCase):
         self.assertEqual(res.exit_code, 1)
         self.assertIn("Read-only invariant violation", res.output)
         self.assertFalse(internal_patch.exists())
+
+    def test_propose_cli_rejects_internal_cache_dir(self):
+        internal_cache = self.repo_dir / "custom_cache"
+        res_code = self.runner.invoke(
+            main,
+            [
+                "propose-code",
+                "Add helper",
+                str(self.repo_dir),
+                "--file",
+                "src/auth.py",
+                "--provider",
+                "mock",
+                "--cache-dir",
+                str(internal_cache),
+            ],
+        )
+        self.assertEqual(res_code.exit_code, 1)
+        self.assertIn("Read-only invariant violation", res_code.output)
+        self.assertIn("is located inside the target repository", res_code.output)
+        self.assertFalse(internal_cache.exists())
+
+        res_tests = self.runner.invoke(
+            main,
+            [
+                "propose-tests",
+                "src/calculator.py",
+                str(self.repo_dir),
+                "--provider",
+                "mock",
+                "--cache-dir",
+                str(internal_cache),
+            ],
+        )
+        self.assertEqual(res_tests.exit_code, 1)
+        self.assertIn("Read-only invariant violation", res_tests.output)
+        self.assertIn("is located inside the target repository", res_tests.output)
+        self.assertFalse(internal_cache.exists())
+
+    def test_propose_preserves_target_repo_with_indexed_chunks_and_empty_vector_store(self):
+        # 1. Target repository has indexed chunks but NO vector store
+        chunks_file = self.repo_dir / ".codebase_assistant" / "chunks.json"
+        self.assertTrue(chunks_file.is_file(), "Expected indexed chunks in test fixture")
+
+        vector_file = self.repo_dir / ".codebase_assistant" / "vector_index.json"
+        if vector_file.exists():
+            vector_file.unlink()
+
+        # 2. Snapshot target repository file tree with cryptographic SHA-256 hashes
+        def snapshot_tree(root: Path) -> dict[str, str]:
+            hashes = {}
+            for p in root.rglob("*"):
+                if p.is_file():
+                    hashes[p.relative_to(root).as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
+            return hashes
+
+        pre_snapshot = snapshot_tree(self.repo_dir)
+
+        # 3. Run propose-code (triggers manager.sync() when vector store is empty)
+        res_code = self.runner.invoke(
+            main,
+            [
+                "propose-code",
+                "Implement secure password hashing",
+                str(self.repo_dir),
+                "--file",
+                "src/auth.py",
+                "--provider",
+                "mock",
+            ],
+        )
+        self.assertEqual(res_code.exit_code, 0, res_code.output)
+        self.assertIn("Proposal #1", res_code.output)
+
+        post_code_snapshot = snapshot_tree(self.repo_dir)
+        self.assertEqual(
+            pre_snapshot,
+            post_code_snapshot,
+            "Target repository files or hashes changed after propose-code!",
+        )
+
+        # 4. Run propose-tests
+        res_test = self.runner.invoke(
+            main,
+            [
+                "propose-tests",
+                "src/calculator.py",
+                str(self.repo_dir),
+                "--provider",
+                "mock",
+            ],
+        )
+        self.assertEqual(res_test.exit_code, 0, res_test.output)
+        self.assertIn("Proposal #1", res_test.output)
+
+        post_test_snapshot = snapshot_tree(self.repo_dir)
+        self.assertEqual(
+            pre_snapshot,
+            post_test_snapshot,
+            "Target repository files or hashes changed after propose-tests!",
+        )
 
 
 if __name__ == "__main__":

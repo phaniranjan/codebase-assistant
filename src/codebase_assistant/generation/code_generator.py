@@ -155,22 +155,34 @@ Propose the changes now:"""
             if "def " in raw_text or "class " in raw_text:
                 proposed_code = raw_text
 
-        # 6. AST Syntax Verification
-        ast_valid, syntax_errors = DiffEngine.validate_ast_syntax(proposed_code, filename=resolved_target)
-
-        # 7. Generate Unified Diff
-        unified_diff = DiffEngine.generate_unified_diff(
-            original_content=original_content,
-            proposed_content=proposed_code,
-            file_path=resolved_target,
-            is_new_file=is_new_file,
-        )
+        # 6. AST Syntax Verification & Diff Generation
+        if not proposed_code.strip():
+            ast_valid = False
+            syntax_errors = ["No valid Python code block was extracted from model response."]
+            unified_diff = ""
+        else:
+            ast_valid, syntax_errors = DiffEngine.validate_ast_syntax(
+                proposed_code,
+                filename=resolved_target,
+                allow_empty=False,
+            )
+            unified_diff = (
+                DiffEngine.generate_unified_diff(
+                    original_content=original_content,
+                    proposed_content=proposed_code,
+                    file_path=resolved_target,
+                    is_new_file=is_new_file,
+                )
+                if ast_valid
+                else ""
+            )
 
         # Extract affected symbols from AST
         affected_symbols = []
         if ast_valid and proposed_code.strip():
             try:
                 import ast
+
                 tree = ast.parse(proposed_code)
                 for node in ast.walk(tree):
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -191,7 +203,12 @@ Propose the changes now:"""
             affected_symbols=affected_symbols,
         )
 
-        verification_summary = "AST syntax valid" if ast_valid else f"AST syntax errors: {'; '.join(syntax_errors)}"
+        is_proposal_valid = ast_valid and bool(proposed_code.strip())
+        verification_summary = (
+            "AST syntax valid"
+            if is_proposal_valid
+            else f"Code proposal verification failed: {'; '.join(syntax_errors)}"
+        )
 
         token_usage = {
             "prompt_tokens": response.prompt_tokens or 0,
@@ -205,7 +222,7 @@ Propose the changes now:"""
             proposals=[proposal],
             retrieved_chunks_count=len(search_results),
             total_files_affected=1,
-            is_valid=ast_valid,
+            is_valid=is_proposal_valid,
             verification_summary=verification_summary,
             token_usage=token_usage,
         )

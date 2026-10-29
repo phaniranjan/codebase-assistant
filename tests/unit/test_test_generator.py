@@ -96,6 +96,86 @@ class TestTestProposalGenerator(unittest.TestCase):
         # Verify target repository was NOT modified on disk
         self.assertFalse((self.repo_dir / "tests/unit/test_auth.py").exists())
 
+    def test_propose_tests_rejects_source_path_traversal(self):
+        generator = TestProposalGenerator(
+            repository_path=self.repo_dir,
+            retriever=self.retriever,
+            llm_client=self.mock_client,
+        )
+
+        result = generator.propose_tests(source_file="../outside.py")
+        self.assertFalse(result.is_valid)
+        self.assertEqual(len(result.proposals), 0)
+        self.assertIn("Path security violation", result.verification_summary)
+
+        result2 = generator.propose_tests(source_file="src/../../outside.py")
+        self.assertFalse(result2.is_valid)
+        self.assertIn("Path security violation", result2.verification_summary)
+
+    def test_propose_tests_rejects_symlink_pointing_outside(self):
+        generator = TestProposalGenerator(
+            repository_path=self.repo_dir,
+            retriever=self.retriever,
+            llm_client=self.mock_client,
+        )
+
+        with tempfile.TemporaryDirectory() as external_tmp:
+            ext_file = Path(external_tmp) / "external_code.py"
+            ext_file.write_text("def secret(): pass\n", encoding="utf-8")
+            symlink_path = self.repo_dir / "src" / "symlink_auth.py"
+            try:
+                symlink_path.symlink_to(ext_file)
+            except (OSError, NotImplementedError):
+                raise unittest.SkipTest("Symlinks not supported in this environment")
+
+            result = generator.propose_tests(source_file="src/symlink_auth.py")
+            self.assertFalse(result.is_valid)
+            self.assertIn("Path security violation", result.verification_summary)
+
+    def test_propose_tests_nonexistent_source_file_fails(self):
+        generator = TestProposalGenerator(
+            repository_path=self.repo_dir,
+            retriever=self.retriever,
+            llm_client=self.mock_client,
+        )
+
+        result = generator.propose_tests(source_file="src/nonexistent.py")
+        self.assertFalse(result.is_valid)
+        self.assertEqual(len(result.proposals), 0)
+        self.assertIn("Source file not found", result.verification_summary)
+
+    def test_propose_tests_empty_response_fails(self):
+        client = MockGeminiClient(canned_response="")
+        generator = TestProposalGenerator(
+            repository_path=self.repo_dir,
+            retriever=self.retriever,
+            llm_client=client,
+        )
+
+        result = generator.propose_tests(source_file="src/auth.py")
+        self.assertFalse(result.is_valid)
+        self.assertEqual(len(result.proposals), 1)
+        prop = result.proposals[0]
+        self.assertFalse(prop.ast_valid)
+        self.assertIn("No valid Python test code block was extracted", prop.syntax_errors[0])
+
+    def test_propose_tests_prose_only_response_fails(self):
+        client = MockGeminiClient(
+            canned_response="Here is a unit test idea: write a test verifying login returns False for bad tokens."
+        )
+        generator = TestProposalGenerator(
+            repository_path=self.repo_dir,
+            retriever=self.retriever,
+            llm_client=client,
+        )
+
+        result = generator.propose_tests(source_file="src/auth.py")
+        self.assertFalse(result.is_valid)
+        self.assertEqual(len(result.proposals), 1)
+        prop = result.proposals[0]
+        self.assertFalse(prop.ast_valid)
+        self.assertIn("No valid Python test code block was extracted", prop.syntax_errors[0])
+
 
 if __name__ == "__main__":
     unittest.main()

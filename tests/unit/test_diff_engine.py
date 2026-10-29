@@ -90,6 +90,86 @@ class TestDiffEngine(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("SyntaxError", errors[0])
 
+    def test_validate_ast_syntax_empty_code_rejected(self):
+        valid, errors = DiffEngine.validate_ast_syntax("")
+        self.assertFalse(valid)
+        self.assertIn("Code proposal is empty or contains only whitespace.", errors)
+
+        valid, errors = DiffEngine.validate_ast_syntax("   \n\t  ")
+        self.assertFalse(valid)
+        self.assertIn("Code proposal is empty or contains only whitespace.", errors)
+
+        # Allow empty flag test
+        valid, errors = DiffEngine.validate_ast_syntax("", allow_empty=True)
+        self.assertTrue(valid)
+        self.assertEqual(len(errors), 0)
+
+    def test_apply_diff_context_past_eof_rejected(self):
+        original = "line1\n"
+        diff = (
+            "--- a/file.py\n"
+            "+++ b/file.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            " line1\n"
+            "+line1.5\n"
+            " line2\n"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            DiffEngine.apply_diff_in_memory(original, diff)
+        self.assertIn("occurs past end of original content", str(ctx.exception))
+
+    def test_apply_diff_hunk_line_count_mismatch_rejected(self):
+        original = "line1\nline2\nline3\n"
+        # Claims old_count=3 but only 2 old lines provided
+        diff = (
+            "--- a/file.py\n"
+            "+++ b/file.py\n"
+            "@@ -1,3 +1,2 @@\n"
+            " line1\n"
+            "-line2\n"
+            "+line2_new\n"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            DiffEngine.apply_diff_in_memory(original, diff)
+        self.assertIn("header specifies 3 old lines, but hunk contains 2", str(ctx.exception))
+
+    def test_apply_diff_overlapping_or_out_of_order_hunks_rejected(self):
+        original = "line1\nline2\nline3\nline4\nline5\nline6\n"
+        diff = (
+            "--- a/file.py\n"
+            "+++ b/file.py\n"
+            "@@ -5,2 +5,2 @@\n"
+            " line5\n"
+            "-line6\n"
+            "+line6_new\n"
+            "@@ -3,2 +3,2 @@\n"
+            " line3\n"
+            "-line4\n"
+            "+line4_new\n"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            DiffEngine.apply_diff_in_memory(original, diff)
+        self.assertIn("overlapping or out-of-order hunk", str(ctx.exception))
+
+    def test_validate_target_path_symlink_escape_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_path = Path(tmp_dir) / "repo"
+            repo_path.mkdir()
+            outside_dir = Path(tmp_dir) / "outside"
+            outside_dir.mkdir()
+            outside_file = outside_dir / "secret.py"
+            outside_file.write_text("SECRET = 1\n", encoding="utf-8")
+
+            symlink_path = repo_path / "link_secret.py"
+            try:
+                symlink_path.symlink_to(outside_file)
+            except (OSError, NotImplementedError):
+                raise unittest.SkipTest("Symlinks not supported in this environment")
+
+            with self.assertRaises(ValueError) as ctx:
+                DiffEngine.validate_target_path(repo_path, "link_secret.py")
+            self.assertIn("resolves outside repository via symlink", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

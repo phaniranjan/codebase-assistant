@@ -127,6 +127,68 @@ class TestCodeProposalGenerator(unittest.TestCase):
         self.assertEqual(len(result.proposals), 0)
         self.assertIn("Path security violation", result.verification_summary)
 
+    def test_propose_empty_response_fails_verification(self):
+        client = MockGeminiClient(canned_response="")
+        generator = CodeProposalGenerator(
+            repository_path=self.repo_dir,
+            retriever=self.retriever,
+            llm_client=client,
+        )
+
+        result = generator.propose(
+            task="Enhance divide",
+            target_file="src/calc.py",
+        )
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(len(result.proposals), 1)
+        prop = result.proposals[0]
+        self.assertFalse(prop.ast_valid)
+        self.assertIn("No valid Python code block was extracted", prop.syntax_errors[0])
+
+    def test_propose_prose_only_response_fails_verification(self):
+        client = MockGeminiClient(
+            canned_response="You should simply divide a by b, but first check if b is zero and raise ZeroDivisionError."
+        )
+        generator = CodeProposalGenerator(
+            repository_path=self.repo_dir,
+            retriever=self.retriever,
+            llm_client=client,
+        )
+
+        result = generator.propose(
+            task="Enhance divide",
+            target_file="src/calc.py",
+        )
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(len(result.proposals), 1)
+        prop = result.proposals[0]
+        self.assertFalse(prop.ast_valid)
+        self.assertIn("No valid Python code block was extracted", prop.syntax_errors[0])
+
+    def test_propose_malformed_syntax_fails_verification(self):
+        client = MockGeminiClient(
+            canned_response="```python\ndef broken_function(\n    return 1\n```"
+        )
+        generator = CodeProposalGenerator(
+            repository_path=self.repo_dir,
+            retriever=self.retriever,
+            llm_client=client,
+        )
+
+        result = generator.propose(
+            task="Enhance divide",
+            target_file="src/calc.py",
+        )
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(len(result.proposals), 1)
+        prop = result.proposals[0]
+        self.assertFalse(prop.ast_valid)
+        self.assertTrue(len(prop.syntax_errors) > 0)
+        self.assertIn("SyntaxError", prop.syntax_errors[0])
+
 
 if __name__ == "__main__":
     unittest.main()

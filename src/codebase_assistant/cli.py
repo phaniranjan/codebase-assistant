@@ -1,6 +1,8 @@
 """Command-line interface for Codebase Assistant."""
 
+import hashlib
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import click
@@ -712,6 +714,59 @@ def evaluate(
             sys.exit(1)
 
 
+def _resolve_proposal_cache(target_repo: Path, cache_dir: str | None) -> Path:
+    """Resolve and isolate the cache directory for proposal generation.
+
+    Enforces strict read-only safety:
+    1. If user-supplied --cache-dir resolves inside target_repo, rejects and exits.
+    2. If no cache_dir is provided, creates an isolated cache in system temp.
+    3. Copies existing indexed chunks/manifest from target repository or CWD to the isolated cache
+       so that subsequent embedding generation/sync never writes into the target repository.
+    """
+    if cache_dir:
+        resolved_cache = Path(cache_dir).resolve()
+        try:
+            resolved_cache.relative_to(target_repo)
+            print(
+                f"\n[Error] Read-only invariant violation: Cache directory '{resolved_cache}' "
+                f"is located inside the target repository '{target_repo}'. Proposals must not write into the target repository.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except ValueError:
+            return resolved_cache
+
+    # Safe external cache in temp directory keyed by target repository path
+    repo_hash = hashlib.sha256(str(target_repo).encode("utf-8")).hexdigest()[:12]
+    external_cache = Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "proposal_cache" / repo_hash
+    external_cache.mkdir(parents=True, exist_ok=True)
+
+    settings = get_settings()
+    repo_cache = target_repo / settings.cache_dir
+    candidate_dirs = [repo_cache]
+
+    # Also consider CWD .codebase_assistant if outside target repo
+    cwd_cache = Path(".codebase_assistant").resolve()
+    try:
+        cwd_cache.relative_to(target_repo)
+    except ValueError:
+        candidate_dirs.append(cwd_cache)
+
+    for cand_dir in candidate_dirs:
+        if cand_dir.is_dir():
+            for filename in ("chunks.json", "manifest.json", "vector_index.json"):
+                src_file = cand_dir / filename
+                dst_file = external_cache / filename
+                if src_file.is_file():
+                    # Copy if destination missing or source is strictly newer
+                    if not dst_file.exists() or src_file.stat().st_mtime > dst_file.stat().st_mtime:
+                        shutil.copy2(src_file, dst_file)
+            if (external_cache / "chunks.json").is_file():
+                break
+
+    return external_cache
+
+
 def _display_and_save_proposal(
     result: ProposalResult,
     target_repo: Path,
@@ -842,10 +897,15 @@ def propose_code(
         except ValueError:
             pass
 
-    cache = Path(cache_dir).resolve() if cache_dir else target_repo / get_settings().cache_dir
+    cache = _resolve_proposal_cache(target_repo, cache_dir)
 
     indexer = IncrementalIndexer(target_repo, cache_dir=cache)
     chunks = indexer.load_chunks()
+
+    if not chunks:
+        # If chunks not found in isolated cache, attempt indexing directly into isolated cache
+        indexer.index()
+        chunks = indexer.load_chunks()
 
     if not chunks:
         print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.", file=sys.stderr)
@@ -965,10 +1025,15 @@ def propose_tests(
         except ValueError:
             pass
 
-    cache = Path(cache_dir).resolve() if cache_dir else target_repo / get_settings().cache_dir
+    cache = _resolve_proposal_cache(target_repo, cache_dir)
 
     indexer = IncrementalIndexer(target_repo, cache_dir=cache)
     chunks = indexer.load_chunks()
+
+    if not chunks:
+        # If chunks not found in isolated cache, attempt indexing directly into isolated cache
+        indexer.index()
+        chunks = indexer.load_chunks()
 
     if not chunks:
         print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.", file=sys.stderr)

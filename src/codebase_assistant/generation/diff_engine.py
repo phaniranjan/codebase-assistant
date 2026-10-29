@@ -47,27 +47,52 @@ class DiffEngine:
 
     @classmethod
     def validate_target_path(cls, repository_path: Path | str, target_file: str) -> Path:
-        """Enforce workspace containment and prevent path traversal attacks."""
+        """Enforce workspace containment and prevent path traversal and symlink escape attacks."""
         repo = Path(repository_path).resolve()
-        norm = normalize_rel_path(target_file)
 
-        # Disallow parent references
+        # Disallow raw parent references in unnormalized input
+        raw_parts = Path(target_file).parts
+        if ".." in raw_parts:
+            raise ValueError(f"Path traversal detected: '{target_file}' attempts to navigate outside repository.")
+
+        norm = normalize_rel_path(target_file)
         if ".." in Path(norm).parts:
             raise ValueError(f"Path traversal detected: '{target_file}' attempts to navigate outside repository.")
 
-        target = (repo / norm).resolve()
+        # Check for absolute paths
+        target_p = Path(target_file)
+        if target_p.is_absolute():
+            resolved_abs = target_p.resolve()
+            try:
+                resolved_abs.relative_to(repo)
+                target = resolved_abs
+            except ValueError:
+                raise ValueError(f"Path security violation: Absolute path '{target_file}' resolves outside repository boundary '{repo}'.")
+        else:
+            target = (repo / norm).resolve()
+
         try:
             target.relative_to(repo)
         except ValueError:
-            raise ValueError(f"Path traversal detected: '{target}' resolves outside repository boundary '{repo}'.")
+            raise ValueError(f"Path traversal or symlink escape detected: '{target}' resolves outside repository boundary '{repo}'.")
 
         return target
 
     @classmethod
-    def validate_ast_syntax(cls, code: str, filename: str = "<proposal>") -> Tuple[bool, List[str]]:
-        """Deterministically verify whether Python code parses into a valid AST."""
-        if not code.strip():
-            return True, []
+    def validate_ast_syntax(
+        cls,
+        code: str,
+        filename: str = "<proposal>",
+        allow_empty: bool = False,
+    ) -> Tuple[bool, List[str]]:
+        """Deterministically verify whether Python code parses into a valid AST.
+
+        By default, empty or whitespace-only code is rejected as an invalid proposal.
+        """
+        if not code or not code.strip():
+            if allow_empty:
+                return True, []
+            return False, ["Code proposal is empty or contains only whitespace."]
         try:
             ast.parse(code, filename=filename)
             return True, []
@@ -87,7 +112,7 @@ class DiffEngine:
     ) -> str:
         """Deterministically apply a unified diff to original text in memory without touching disk.
 
-        Raises ValueError if hunks fail to match context or are malformed.
+        Raises ValueError if hunks fail to match context, have mismatched line counts, or are malformed.
         """
         if not unified_diff.strip():
             return original_content
@@ -108,9 +133,11 @@ class DiffEngine:
         hunks = []
         current_hunk = None
 
-        for line in diff_lines:
-            match = hunk_header_re.match(line)
-            if match:
+        for line_num, line in enumerate(diff_lines, start=1):
+            if line.startswith("@@"):
+                match = hunk_header_re.match(line)
+                if not match:
+                    raise ValueError(f"Malformed hunk header syntax at line {line_num}: '{line}'")
                 if current_hunk:
                     hunks.append(current_hunk)
                 old_start = int(match.group(1))
@@ -118,6 +145,7 @@ class DiffEngine:
                 new_start = int(match.group(3))
                 new_count = int(match.group(4)) if match.group(4) is not None else 1
                 current_hunk = {
+                    "header_line": line_num,
                     "old_start": old_start,
                     "old_count": old_count,
                     "new_start": new_start,
@@ -127,6 +155,8 @@ class DiffEngine:
             elif current_hunk is not None:
                 if line.startswith(("-", "+", " ", "\\")):
                     current_hunk["lines"].append(line)
+                elif line.strip():
+                    raise ValueError(f"Malformed patch line at diff line {line_num}: '{line}'")
 
         if current_hunk:
             hunks.append(current_hunk)
@@ -134,12 +164,39 @@ class DiffEngine:
         if not hunks:
             return original_content
 
+        # Hunk validation: verify line counts match header specifications
+        for hunk in hunks:
+            actual_old = sum(1 for l in hunk["lines"] if l.startswith((" ", "-")))
+            actual_new = sum(1 for l in hunk["lines"] if l.startswith((" ", "+")))
+            if actual_old != hunk["old_count"]:
+                raise ValueError(
+                    f"Malformed hunk at diff line {hunk['header_line']}: header specifies {hunk['old_count']} old lines, "
+                    f"but hunk contains {actual_old} (@@ -{hunk['old_start']},{hunk['old_count']} +{hunk['new_start']},{hunk['new_count']} @@)"
+                )
+            if actual_new != hunk["new_count"]:
+                raise ValueError(
+                    f"Malformed hunk at diff line {hunk['header_line']}: header specifies {hunk['new_count']} new lines, "
+                    f"but hunk contains {actual_new} (@@ -{hunk['old_start']},{hunk['old_count']} +{hunk['new_start']},{hunk['new_count']} @@)"
+                )
+
         result_lines = []
         orig_idx = 0
 
         for hunk in hunks:
-            # 1-indexed to 0-indexed
             target_old_start = max(0, hunk["old_start"] - 1)
+
+            # Check for overlapping or out-of-order hunks
+            if orig_idx > target_old_start:
+                raise ValueError(
+                    f"Malformed patch: overlapping or out-of-order hunk at line {hunk['old_start']} "
+                    f"(current position is line {orig_idx + 1})"
+                )
+
+            # Check if hunk start exceeds file length
+            if target_old_start > len(orig_lines) and hunk["old_count"] > 0:
+                raise ValueError(
+                    f"Patch hunk start line {hunk['old_start']} exceeds file length {len(orig_lines)}"
+                )
 
             # Copy unchanged lines leading up to this hunk
             while orig_idx < target_old_start and orig_idx < len(orig_lines):
@@ -151,26 +208,28 @@ class DiffEngine:
                 content = h_line[1:]
 
                 if prefix == " ":
-                    if orig_idx < len(orig_lines):
-                        if orig_lines[orig_idx] != content:
-                            raise ValueError(
-                                f"Patch context mismatch at line {orig_idx + 1}: "
-                                f"expected '{content}', found '{orig_lines[orig_idx]}'"
-                            )
-                        result_lines.append(orig_lines[orig_idx])
-                        orig_idx += 1
-                    else:
-                        result_lines.append(content)
+                    if orig_idx >= len(orig_lines):
+                        raise ValueError(
+                            f"Patch context mismatch: context line '{content}' occurs past end of original content (line {orig_idx + 1})"
+                        )
+                    if orig_lines[orig_idx] != content:
+                        raise ValueError(
+                            f"Patch context mismatch at line {orig_idx + 1}: "
+                            f"expected '{content}', found '{orig_lines[orig_idx]}'"
+                        )
+                    result_lines.append(orig_lines[orig_idx])
+                    orig_idx += 1
                 elif prefix == "-":
-                    if orig_idx < len(orig_lines):
-                        if orig_lines[orig_idx] != content:
-                            raise ValueError(
-                                f"Patch deletion mismatch at line {orig_idx + 1}: "
-                                f"expected to delete '{content}', found '{orig_lines[orig_idx]}'"
-                            )
-                        orig_idx += 1
-                    else:
-                        raise ValueError(f"Patch deletion failed: line {orig_idx + 1} exceeds file length")
+                    if orig_idx >= len(orig_lines):
+                        raise ValueError(
+                            f"Patch deletion failed: line {orig_idx + 1} exceeds file length"
+                        )
+                    if orig_lines[orig_idx] != content:
+                        raise ValueError(
+                            f"Patch deletion mismatch at line {orig_idx + 1}: "
+                            f"expected to delete '{content}', found '{orig_lines[orig_idx]}'"
+                        )
+                    orig_idx += 1
                 elif prefix == "+":
                     result_lines.append(content)
                 elif prefix == "\\":
