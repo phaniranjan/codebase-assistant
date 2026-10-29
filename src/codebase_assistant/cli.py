@@ -29,6 +29,11 @@ from codebase_assistant.embeddings.mock import MockEmbeddingProvider
 from codebase_assistant.evaluation.dataset import GoldenDataset
 from codebase_assistant.evaluation.report import EvaluationReporter
 from codebase_assistant.evaluation.runner import EvaluationRunner
+from codebase_assistant.generation import (
+    CodeProposalGenerator,
+    ProposalResult,
+    TestProposalGenerator,
+)
 from codebase_assistant.ingestion.indexer import IncrementalIndexer
 from codebase_assistant.ingestion.scanner import RepositoryScanner
 from codebase_assistant.llm.client import GeminiClient
@@ -705,6 +710,326 @@ def evaluate(
         if any_failed:
             print("\n[Error] Quality gates failed and --fail-under was specified.", file=sys.stderr)
             sys.exit(1)
+
+
+def _display_and_save_proposal(
+    result: ProposalResult,
+    target_repo: Path,
+    output_patch: str | None = None,
+) -> None:
+    """Helper to display proposal results, AST status, diffs, and save patch if requested."""
+    print_info("Task", result.task_description)
+    print_info("Provider", f"{result.provider_name} ({result.model_name})")
+    print_info("Retrieved Chunks", str(result.retrieved_chunks_count))
+    print_info("Files Affected", str(result.total_files_affected))
+
+    if not result.proposals:
+        print("\nNo code proposals generated.")
+        if not result.is_valid:
+            print(f"[Error] {result.verification_summary}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    for idx, prop in enumerate(result.proposals, start=1):
+        action_label = prop.proposal_type.value.upper()
+        print(f"\n{'='*20} Proposal #{idx}: [{action_label}] {prop.target_file} {'='*20}")
+
+        print("\n--- Architectural Reasoning ---")
+        print(prop.architectural_reasoning)
+
+        print("\n--- AST Syntax Verification ---")
+        if prop.ast_valid:
+            if rich_available and console:
+                console.print("[bold green]✓ AST Syntax: Valid Python[/bold green]")
+            else:
+                print("✓ AST Syntax: Valid Python")
+        else:
+            err_msg = (
+                f"✗ AST Syntax Error: {'; '.join(prop.syntax_errors) if prop.syntax_errors else 'Parsing failed'}"
+            )
+            if rich_available and console:
+                console.print(f"[bold red]{err_msg}[/bold red]")
+            else:
+                print(err_msg)
+
+        print("\n--- Proposed Unified Diff ---")
+        if prop.unified_diff:
+            if rich_available and console:
+                try:
+                    from rich.syntax import Syntax
+
+                    syntax = Syntax(prop.unified_diff, "diff", background_color="default")
+                    console.print(syntax)
+                except Exception:
+                    print(prop.unified_diff)
+            else:
+                print(prop.unified_diff)
+        else:
+            print("[No diff generated]")
+
+    if output_patch:
+        p_patch = Path(output_patch).resolve()
+        # Read-only guard: ensure output patch is outside target repo
+        try:
+            p_patch.relative_to(target_repo)
+            print(
+                f"\n[Error] Read-only invariant violation: Output patch '{p_patch}' cannot be written inside the target repository '{target_repo}'.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except ValueError:
+            pass
+
+        p_patch.parent.mkdir(parents=True, exist_ok=True)
+        diff_payload = "\n\n".join(prop.unified_diff for prop in result.proposals if prop.unified_diff)
+        p_patch.write_text(diff_payload, encoding="utf-8")
+        print_success("\nSaved unified diff patch to:", str(p_patch))
+
+    print(f"\nVerification: {result.verification_summary}")
+    if not result.is_valid:
+        print("[Error] One or more proposals failed deterministic verification.", file=sys.stderr)
+        sys.exit(1)
+
+
+@main.command(name="propose-code")
+@click.argument("task")
+@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
+@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.option("--file", "target_file", default=None, help="Target file relative path to modify or create.")
+@click.option(
+    "--mode",
+    default="hybrid",
+    type=click.Choice(["hybrid", "dense_only", "sparse_only"], case_sensitive=False),
+    help="Retrieval mode.",
+)
+@click.option(
+    "--provider",
+    "provider_type",
+    default="gemini",
+    type=click.Choice(["gemini", "mock"], case_sensitive=False),
+    help="Provider for LLM reasoning and embeddings.",
+)
+@click.option("--top-k", default=5, type=int, help="Number of code chunks to retrieve.")
+@click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
+@click.option("--allow-fallback", is_flag=True, default=False, help="Allow falling back to mock provider if Gemini initialization fails.")
+@click.option("--cache-dir", default=None, help="Custom cache directory.")
+@click.option("--output-patch", default=None, help="Optional external file path to save the generated unified diff patch.")
+def propose_code(
+    task: str,
+    repo_path: str | None,
+    repo_path_opt: str | None,
+    target_file: str | None,
+    mode: str,
+    provider_type: str,
+    top_k: int,
+    budget: int,
+    allow_fallback: bool,
+    cache_dir: str | None,
+    output_patch: str | None,
+):
+    """Generate a context-aware unified diff proposal for a developer code task."""
+    target_repo = Path(repo_path_opt or repo_path or ".").resolve()
+
+    if output_patch:
+        p_patch = Path(output_patch).resolve()
+        try:
+            p_patch.relative_to(target_repo)
+            print(
+                f"\n[Error] Read-only invariant violation: Output patch '{p_patch}' cannot be written inside the target repository '{target_repo}'.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except ValueError:
+            pass
+
+    cache = Path(cache_dir).resolve() if cache_dir else target_repo / get_settings().cache_dir
+
+    indexer = IncrementalIndexer(target_repo, cache_dir=cache)
+    chunks = indexer.load_chunks()
+
+    if not chunks:
+        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.", file=sys.stderr)
+        sys.exit(1)
+
+    if provider_type.lower() == "mock":
+        emb_provider = MockEmbeddingProvider()
+        llm_client = MockGeminiClient()
+    else:
+        try:
+            emb_provider = GeminiEmbeddingProvider()
+            llm_client = GeminiClient()
+            emb_provider._get_client()
+            llm_client._get_client()
+        except Exception as e:
+            if allow_fallback:
+                print(f"[Warning] {e}")
+                print("Falling back to Mock providers for offline execution.")
+                emb_provider = MockEmbeddingProvider()
+                llm_client = MockGeminiClient()
+            else:
+                print(f"\n[Error] {e}", file=sys.stderr)
+                print("Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                sys.exit(1)
+
+    manager = EmbeddingManager(target_repo, cache_dir=cache, provider=emb_provider)
+    vector_store = manager.load_vector_store()
+
+    if mode in ("hybrid", "dense_only") and vector_store.count() == 0:
+        print("Notice: Vector store is empty. Generating embeddings first...")
+        manager.sync()
+        vector_store = manager.load_vector_store()
+
+    try:
+        retriever = HybridRetriever(
+            chunks=chunks,
+            vector_store=vector_store,
+            embedding_provider=emb_provider,
+        )
+    except ValueError as e:
+        print(f"Error initializing retriever: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    generator = CodeProposalGenerator(
+        repository_path=target_repo,
+        retriever=retriever,
+        llm_client=llm_client,
+    )
+
+    result = generator.propose(
+        task=task,
+        target_file=target_file,
+        top_k=top_k,
+        budget=budget,
+    )
+
+    _display_and_save_proposal(
+        result=result,
+        target_repo=target_repo,
+        output_patch=output_patch,
+    )
+
+
+@main.command(name="propose-tests")
+@click.argument("target_file")
+@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
+@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.option(
+    "--framework",
+    default=None,
+    type=click.Choice(["pytest", "unittest"], case_sensitive=False),
+    help="Testing framework override (default: auto-detect).",
+)
+@click.option(
+    "--mode",
+    default="hybrid",
+    type=click.Choice(["hybrid", "dense_only", "sparse_only"], case_sensitive=False),
+    help="Retrieval mode.",
+)
+@click.option(
+    "--provider",
+    "provider_type",
+    default="gemini",
+    type=click.Choice(["gemini", "mock"], case_sensitive=False),
+    help="Provider for LLM reasoning and embeddings.",
+)
+@click.option("--top-k", default=5, type=int, help="Number of code chunks to retrieve.")
+@click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
+@click.option("--allow-fallback", is_flag=True, default=False, help="Allow falling back to mock provider if Gemini initialization fails.")
+@click.option("--cache-dir", default=None, help="Custom cache directory.")
+@click.option("--output-patch", default=None, help="Optional external file path to save the generated unified diff patch.")
+def propose_tests(
+    target_file: str,
+    repo_path: str | None,
+    repo_path_opt: str | None,
+    framework: str | None,
+    mode: str,
+    provider_type: str,
+    top_k: int,
+    budget: int,
+    allow_fallback: bool,
+    cache_dir: str | None,
+    output_patch: str | None,
+):
+    """Generate a targeted unit test proposal in unified diff format for a source file."""
+    target_repo = Path(repo_path_opt or repo_path or ".").resolve()
+
+    if output_patch:
+        p_patch = Path(output_patch).resolve()
+        try:
+            p_patch.relative_to(target_repo)
+            print(
+                f"\n[Error] Read-only invariant violation: Output patch '{p_patch}' cannot be written inside the target repository '{target_repo}'.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except ValueError:
+            pass
+
+    cache = Path(cache_dir).resolve() if cache_dir else target_repo / get_settings().cache_dir
+
+    indexer = IncrementalIndexer(target_repo, cache_dir=cache)
+    chunks = indexer.load_chunks()
+
+    if not chunks:
+        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.", file=sys.stderr)
+        sys.exit(1)
+
+    if provider_type.lower() == "mock":
+        emb_provider = MockEmbeddingProvider()
+        llm_client = MockGeminiClient()
+    else:
+        try:
+            emb_provider = GeminiEmbeddingProvider()
+            llm_client = GeminiClient()
+            emb_provider._get_client()
+            llm_client._get_client()
+        except Exception as e:
+            if allow_fallback:
+                print(f"[Warning] {e}")
+                print("Falling back to Mock providers for offline execution.")
+                emb_provider = MockEmbeddingProvider()
+                llm_client = MockGeminiClient()
+            else:
+                print(f"\n[Error] {e}", file=sys.stderr)
+                print("Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                sys.exit(1)
+
+    manager = EmbeddingManager(target_repo, cache_dir=cache, provider=emb_provider)
+    vector_store = manager.load_vector_store()
+
+    if mode in ("hybrid", "dense_only") and vector_store.count() == 0:
+        print("Notice: Vector store is empty. Generating embeddings first...")
+        manager.sync()
+        vector_store = manager.load_vector_store()
+
+    try:
+        retriever = HybridRetriever(
+            chunks=chunks,
+            vector_store=vector_store,
+            embedding_provider=emb_provider,
+        )
+    except ValueError as e:
+        print(f"Error initializing retriever: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    generator = TestProposalGenerator(
+        repository_path=target_repo,
+        retriever=retriever,
+        llm_client=llm_client,
+    )
+
+    result = generator.propose_tests(
+        source_file=target_file,
+        framework=framework,
+        top_k=top_k,
+        budget=budget,
+    )
+
+    _display_and_save_proposal(
+        result=result,
+        target_repo=target_repo,
+        output_patch=output_patch,
+    )
 
 
 if __name__ == "__main__":

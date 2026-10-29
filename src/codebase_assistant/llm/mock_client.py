@@ -1,6 +1,7 @@
 """Deterministic mock Gemini client for fast offline testing and verification."""
 
 import math
+from pathlib import Path
 import re
 from typing import Iterator, Optional
 
@@ -50,9 +51,79 @@ class MockGeminiClient(BaseLLMClient):
         return cleaned.strip()
 
     def _synthesize_answer(self, prompt: str) -> str:
-        """Synthesize a grounded answer based on the references in the prompt."""
+        """Synthesize a grounded answer or code proposal based on prompt type."""
         if self.canned_response is not None:
             return self.canned_response
+
+        # 1. Handle Code Proposal Generation
+        if "[DEVELOPER TASK]" in prompt:
+            task_match = re.search(r"\[DEVELOPER TASK\]\s*(.+?)\s*\[END DEVELOPER TASK\]", prompt, re.DOTALL)
+            task_str = task_match.group(1).strip() if task_match else "propose change"
+            file_match = re.search(r"Target file to modify or create: '([^']+)'", prompt)
+            target_file = file_match.group(1) if file_match else "src/proposal.py"
+
+            # Check context block for existing code
+            ctx_match = re.search(r"\[CONTEXT_START\](.*?)\[CONTEXT_END\]", prompt, re.DOTALL)
+            ctx_text = ctx_match.group(1) if ctx_match else ""
+            code_blocks = re.findall(r"```python\s*(.+?)```", ctx_text, re.DOTALL)
+            ctx_code = code_blocks[0].strip() if code_blocks else ""
+
+            task_clean = task_str.split("\n")[0].strip()
+
+            if ctx_code:
+                proposed_code = (
+                    f"{ctx_code}\n\n"
+                    "def proposed_enhancement():\n"
+                    f"    \"\"\"Implementation for: {task_clean}\"\"\"\n"
+                    "    return True\n"
+                )
+            else:
+                proposed_code = (
+                    "\"\"\"Proposed module implementation.\"\"\"\n\n"
+                    "def execute_task():\n"
+                    f"    \"\"\"Implementation for: {task_clean}\"\"\"\n"
+                    "    return {'status': 'success'}\n"
+                )
+
+            return (
+                "--- ARCHITECTURAL REASONING ---\n"
+                f"The proposed modification implements '{task_str}' in '{target_file}' with structured error handling and AST-valid syntax.\n\n"
+                f"--- FILE: {target_file} ---\n"
+                "```python\n"
+                f"{proposed_code}\n"
+                "```"
+            )
+
+        # 2. Handle Test Proposal Generation
+        if "[TEST GENERATION TASK]" in prompt:
+            file_match = re.search(r"Target source file: '([^']+)'", prompt)
+            target_file = file_match.group(1) if file_match else "src/module.py"
+            mod_name = Path(target_file).stem
+            cls_name = "".join(part.capitalize() for part in mod_name.split("_"))
+
+            test_code = (
+                f"\"\"\"Targeted unit tests for {target_file}.\"\"\"\n\n"
+                "import unittest\n\n\n"
+                f"class Test{cls_name}(unittest.TestCase):\n"
+                f"    \"\"\"Test suite covering core methods and edge cases of {mod_name}.\"\"\"\n\n"
+                "    def test_core_functionality(self):\n"
+                "        self.assertTrue(True)\n\n"
+                "    def test_edge_case_empty_input(self):\n"
+                "        self.assertIsNotNone(True)\n\n\n"
+                "if __name__ == '__main__':\n"
+                "    unittest.main()\n"
+            )
+
+            return (
+                "--- ARCHITECTURAL REASONING ---\n"
+                f"Generated targeted unit tests covering core execution and boundary edge cases for '{target_file}'.\n\n"
+                f"--- FILE: tests/unit/test_{mod_name}.py ---\n"
+                "```python\n"
+                f"{test_code}\n"
+                "```"
+            )
+
+        # 3. Standard Grounded Q&A Synthesizer
 
         # Check if context is missing or empty
         if "No relevant repository chunks were found in the index" in prompt:
