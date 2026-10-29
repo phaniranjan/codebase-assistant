@@ -55,13 +55,11 @@ class DiffEngine:
         if ".." in raw_parts:
             raise ValueError(f"Path traversal detected: '{target_file}' attempts to navigate outside repository.")
 
-        norm = normalize_rel_path(target_file)
-        if ".." in Path(norm).parts:
-            raise ValueError(f"Path traversal detected: '{target_file}' attempts to navigate outside repository.")
-
-        # Check for absolute paths
+        # Check for absolute or root-anchored paths (e.g. /path or \path or C:\path)
         target_p = Path(target_file)
-        if target_p.is_absolute():
+        is_root_anchored = target_p.is_absolute() or target_file.startswith(("/", "\\"))
+
+        if is_root_anchored:
             resolved_abs = target_p.resolve()
             try:
                 resolved_abs.relative_to(repo)
@@ -69,6 +67,9 @@ class DiffEngine:
             except ValueError:
                 raise ValueError(f"Path security violation: Absolute path '{target_file}' resolves outside repository boundary '{repo}'.")
         else:
+            norm = normalize_rel_path(target_file)
+            if ".." in Path(norm).parts:
+                raise ValueError(f"Path traversal detected: '{target_file}' attempts to navigate outside repository.")
             target = (repo / norm).resolve()
 
         try:

@@ -97,10 +97,25 @@ class PolicyEngine:
                 f"Permitted test commands must begin with: {', '.join(allowed_desc)}"
             )
 
-        # 5. Check remaining path arguments for directory traversal
+        # 5. Check all arguments for path containment and symlink escapes
+        prev_arg = None
         for arg in args:
-            if ".." in Path(arg).parts:
-                raise SecurityPolicyError(f"Path traversal detected in command argument: '{arg}'.")
+            # Check options with '=' (e.g. --rootdir=/path or -o=value)
+            if arg.startswith("-") and "=" in arg:
+                opt, val = arg.split("=", 1)
+                if val and (Path(val).is_absolute() or "/" in val or "\\" in val or ".." in val or val.endswith((".py", ".ini", ".cfg", ".toml"))):
+                    self.validate_file_access(val)
+            elif not arg.startswith("-"):
+                # Positional argument or value parameter:
+                # Skip known test runner command keywords
+                if arg.lower() not in ("discover", "run", "unittest", "pytest", "python", "python3"):
+                    # Check if it's an expression filter (e.g. -k pattern or -m marker)
+                    if prev_arg not in ("-k", "-m"):
+                        self.validate_file_access(arg)
+            else:
+                if ".." in arg:
+                    raise SecurityPolicyError(f"Path traversal detected in argument '{arg}'.")
+            prev_arg = arg
 
         return args
 

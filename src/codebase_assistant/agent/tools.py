@@ -4,9 +4,11 @@ import json
 import logging
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import tempfile
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from codebase_assistant.agent.models import (
     AuthorizationRequest,
@@ -352,10 +354,15 @@ class ToolRegistry:
         found_manifests = []
 
         for name in manifest_names:
-            p = self.repository_path / name
-            if p.is_file():
+            try:
+                validated_path = self.policy_engine.validate_file_access(name)
+            except SecurityPolicyError:
+                logger.warning("Manifest '%s' violates workspace boundary or escapes via symlink; skipping.", name)
+                continue
+
+            if validated_path.is_file():
                 try:
-                    content = p.read_text(encoding="utf-8", errors="replace")
+                    content = validated_path.read_text(encoding="utf-8", errors="replace")
                     found_manifests.append(f"--- {name} ---\n{content[:2000]}")
                 except Exception as e:
                     found_manifests.append(f"--- {name} (Error reading: {e}) ---")
@@ -417,37 +424,144 @@ class ToolRegistry:
             tool_name="run_selected_tests",
             arguments=args,
             action_summary=f"Execute test runner command: {command}",
-            risk_assessment="Executes local subprocess in isolated workspace without network access.",
+            risk_assessment="Executes local subprocess in isolated disposable workspace without network access.",
         )
 
         authorized = self.permission_engine.check_authorization(ToolType.CONSEQUENTIAL, auth_req)
         if not authorized:
             raise PermissionError(f"User denied authorization for test execution: '{command}'.")
 
-        # Strip network proxies from execution environment
+        # Network isolation: active loopback proxies block outbound connections
         clean_env = os.environ.copy()
-        for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"]:
-            clean_env.pop(k, None)
+        clean_env["HTTP_PROXY"] = "http://127.0.0.1:0"
+        clean_env["HTTPS_PROXY"] = "http://127.0.0.1:0"
+        clean_env["ALL_PROXY"] = "socks5://127.0.0.1:0"
+        clean_env["http_proxy"] = "http://127.0.0.1:0"
+        clean_env["https_proxy"] = "http://127.0.0.1:0"
+        clean_env["all_proxy"] = "socks5://127.0.0.1:0"
+        clean_env["NO_PROXY"] = ""
+        clean_env["no_proxy"] = ""
 
-        try:
-            res = subprocess.run(
-                cmd_args,
-                cwd=self.repository_path,
-                capture_output=True,
-                text=True,
-                timeout=self.command_timeout_seconds,
-                env=clean_env,
+        # Execute tests in a disposable temporary workspace copy
+        with tempfile.TemporaryDirectory(prefix="agent_test_sandbox_") as tmp_dir:
+            sandbox_repo = Path(tmp_dir) / "repo"
+
+            # Filter unsafe symlinks and heavy cache/VCS directories during copy
+            def _ignore_filter(directory: str, contents: List[str]) -> set[str]:
+                ignored: set[str] = set()
+                dir_path = Path(directory)
+                for name in contents:
+                    if name in (".git", "__pycache__", ".pytest_cache", ".venv", "venv", ".mypy_cache"):
+                        ignored.add(name)
+                    elif name.endswith(".pyc"):
+                        ignored.add(name)
+                    else:
+                        item_path = dir_path / name
+                        if item_path.is_symlink():
+                            try:
+                                resolved = item_path.resolve()
+                                resolved.relative_to(self.repository_path)
+                            except (ValueError, RuntimeError):
+                                ignored.add(name)
+                return ignored
+
+            shutil.copytree(self.repository_path, sandbox_repo, ignore=_ignore_filter, symlinks=False)
+
+            # Map any arguments referencing the repository path into the disposable sandbox
+            remapped_cmd: List[str] = []
+            for arg in cmd_args:
+                if arg.startswith("-") and "=" in arg:
+                    opt, val = arg.split("=", 1)
+                    val_path = Path(val)
+                    if val_path.is_absolute():
+                        try:
+                            rel = val_path.relative_to(self.repository_path)
+                            remapped_cmd.append(f"{opt}={sandbox_repo / rel}")
+                            continue
+                        except ValueError:
+                            pass
+                    remapped_cmd.append(arg)
+                else:
+                    arg_path = Path(arg)
+                    if arg_path.is_absolute():
+                        try:
+                            rel = arg_path.relative_to(self.repository_path)
+                            remapped_cmd.append(str(sandbox_repo / rel))
+                            continue
+                        except ValueError:
+                            pass
+                    remapped_cmd.append(arg)
+
+            existing_pythonpath = clean_env.get("PYTHONPATH", "")
+            filtered_pp = [
+                entry for entry in existing_pythonpath.split(os.pathsep)
+                if entry and not entry.startswith(str(self.repository_path))
+            ]
+            clean_env["PYTHONPATH"] = os.pathsep.join(
+                [str(sandbox_repo / "src"), str(sandbox_repo)] + filtered_pp
             )
-            out = res.stdout.strip()
-            err = res.stderr.strip()
-            status = "PASSED" if res.returncode == 0 else f"FAILED (Exit Code {res.returncode})"
-            return (
-                f"Test Execution Result: {status}\n"
-                f"--- STDOUT ---\n{out or '(empty)'}\n"
-                f"--- STDERR ---\n{err or '(empty)'}"
-            )
-        except subprocess.TimeoutExpired:
-            return f"Test Execution Timed Out after {self.command_timeout_seconds} seconds."
+
+            try:
+                res = subprocess.run(
+                    remapped_cmd,
+                    cwd=sandbox_repo,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.command_timeout_seconds,
+                    env=clean_env,
+                )
+                out = res.stdout.strip()
+                err = res.stderr.strip()
+                status = "PASSED" if res.returncode == 0 else f"FAILED (Exit Code {res.returncode})"
+                return (
+                    f"Test Execution Result: {status}\n"
+                    f"--- STDOUT ---\n{out or '(empty)'}\n"
+                    f"--- STDERR ---\n{err or '(empty)'}"
+                )
+            except subprocess.TimeoutExpired:
+                return f"Test Execution Timed Out after {self.command_timeout_seconds} seconds."
+
+    @staticmethod
+    def _split_unified_diff(unified_diff: str) -> List[Tuple[str, str]]:
+        """Split a potentially multi-file unified diff into individual (target_path, file_diff) pairs."""
+        lines = unified_diff.splitlines(keepends=True)
+        chunks: List[List[str]] = []
+        current_chunk: List[str] = []
+
+        for line in lines:
+            # Detect boundary between files:
+            # Either 'diff --git ' or a '--- ' header when current_chunk already contains '+++ '
+            if line.startswith("diff --git ") or (
+                line.startswith("--- ") and any(l.startswith("+++ ") for l in current_chunk)
+            ):
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = []
+            current_chunk.append(line)
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        results: List[Tuple[str, str]] = []
+        for chunk in chunks:
+            target_path: Optional[str] = None
+            for line in chunk:
+                if line.startswith("+++ "):
+                    raw = line[4:].strip()
+                    clean = raw[2:] if raw.startswith("b/") else raw
+                    if clean and clean != "/dev/null":
+                        target_path = clean
+                        break
+                elif line.startswith("--- ") and target_path is None:
+                    raw = line[4:].strip()
+                    clean = raw[2:] if raw.startswith("a/") else raw
+                    if clean and clean != "/dev/null":
+                        target_path = clean
+
+            if target_path:
+                results.append((target_path, "".join(chunk)))
+
+        return results
 
     def _handle_apply_patch(self, args: Dict[str, Any]) -> str:
         unified_diff = args.get("unified_diff", "")
@@ -466,45 +580,58 @@ class ToolRegistry:
         if not authorized:
             raise PermissionError("User denied authorization for applying patch.")
 
-        # In-memory dry run and AST verification before writing
-        diff_lines = unified_diff.splitlines()
-        current_file = None
-        per_file_diffs: Dict[str, List[str]] = {}
+        file_diffs = self._split_unified_diff(unified_diff)
+        if not file_diffs:
+            raise ValueError("No valid file diffs found in patch payload.")
 
-        for line in diff_lines:
-            if line.startswith("+++ "):
-                raw_path = line[4:].strip()
-                clean_path = raw_path[2:] if raw_path.startswith("b/") else raw_path
-                current_file = clean_path
-                per_file_diffs[current_file] = []
-            if current_file is not None:
-                per_file_diffs[current_file].append(line)
-
-        modified_files = []
-        for rel_file, d_lines in per_file_diffs.items():
-            if not rel_file or rel_file == "/dev/null":
-                continue
+        # Phase 1: In-memory dry run and AST verification for all files (no disk writes)
+        prepared_updates: List[Tuple[str, Path, str, str, bool]] = []
+        for rel_file, file_diff in file_diffs:
             abs_target = self.policy_engine.validate_file_access(rel_file)
-            file_diff = "\n".join(d_lines)
-
+            existed = abs_target.is_file()
             orig_content = (
                 abs_target.read_text(encoding="utf-8", errors="replace")
-                if abs_target.is_file()
+                if existed
                 else ""
             )
 
             # Dry-run patch in memory
-            patched_content = DiffEngine.apply_diff_in_memory(orig_content, file_diff)
+            try:
+                patched_content = DiffEngine.apply_diff_in_memory(orig_content, file_diff)
+            except Exception as e:
+                raise ValueError(f"Failed to dry-run patch in memory for '{rel_file}': {e}") from e
 
-            # AST verify Python files
+            # AST verify Python files deterministically
             if abs_target.suffix == ".py":
                 is_valid, errors = DiffEngine.validate_ast_syntax(patched_content, filename=rel_file)
                 if not is_valid:
                     raise ValueError(f"Patched code for '{rel_file}' failed AST validation: {'; '.join(errors)}")
 
-            # Apply to disk
-            abs_target.parent.mkdir(parents=True, exist_ok=True)
-            abs_target.write_text(patched_content, encoding="utf-8")
-            modified_files.append(rel_file)
+            prepared_updates.append((rel_file, abs_target, orig_content, patched_content, existed))
+
+        # Phase 2: Atomic disk application with rollback guarantee on write failure
+        written_stack: List[Tuple[Path, str, bool]] = []
+        modified_files: List[str] = []
+
+        try:
+            for rel_file, abs_target, orig_content, patched_content, existed in prepared_updates:
+                written_stack.append((abs_target, orig_content, existed))
+                abs_target.parent.mkdir(parents=True, exist_ok=True)
+                abs_target.write_text(patched_content, encoding="utf-8")
+                modified_files.append(rel_file)
+        except Exception as write_err:
+            # Rollback modified files to original contents in reverse order
+            for target, orig, existed in reversed(written_stack):
+                try:
+                    if existed:
+                        target.write_text(orig, encoding="utf-8")
+                    else:
+                        if target.exists():
+                            target.unlink()
+                except Exception as rb_err:
+                    logger.error("Failed to rollback file '%s': %s", target, rb_err)
+            raise RuntimeError(
+                f"Atomic patch application failed during disk write. Rolled back all changes: {write_err}"
+            ) from write_err
 
         return f"Successfully applied patch to {len(modified_files)} file(s): {', '.join(modified_files)}"

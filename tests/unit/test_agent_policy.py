@@ -68,6 +68,42 @@ class TestPolicyEngine(unittest.TestCase):
             self.policy.validate_test_command("pytest ../outside_tests.py")
         self.assertIn("Path traversal detected", str(ctx.exception))
 
+    def test_command_external_absolute_path_rejected(self):
+        outside_path = Path(tempfile.gettempdir()) / "outside_test.py"
+        with self.assertRaises(SecurityPolicyError) as ctx:
+            self.policy.validate_test_command(f"pytest {outside_path}")
+        self.assertIn("Workspace boundary violation", str(ctx.exception))
+
+    def test_command_external_symlink_rejected(self):
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside_file = Path(outside_dir) / "evil_test.py"
+            outside_file.write_text("def test_evil(): pass\n", encoding="utf-8")
+            link_path = self.repo_dir / "symlink_evil.py"
+            try:
+                link_path.symlink_to(outside_file)
+            except (OSError, NotImplementedError):
+                self.skipTest("Symlinks not supported in this environment.")
+
+            with self.assertRaises(SecurityPolicyError) as ctx:
+                self.policy.validate_test_command("pytest symlink_evil.py")
+            self.assertIn("Workspace boundary violation", str(ctx.exception))
+
+    def test_command_option_with_external_path_rejected(self):
+        with self.assertRaises(SecurityPolicyError):
+            self.policy.validate_test_command("pytest --rootdir=/outside/path")
+
+        with self.assertRaises(SecurityPolicyError):
+            self.policy.validate_test_command("pytest -c /outside/pytest.ini")
+
+    def test_command_filter_expressions_allowed(self):
+        cmd1 = self.policy.validate_test_command("pytest -k test_math_operation")
+        self.assertIn("-k", cmd1)
+        self.assertIn("test_math_operation", cmd1)
+
+        cmd2 = self.policy.validate_test_command("pytest -m integration")
+        self.assertIn("-m", cmd2)
+        self.assertIn("integration", cmd2)
+
     def test_workspace_containment_for_files(self):
         # Valid path
         valid = self.policy.validate_file_access("src/main.py")

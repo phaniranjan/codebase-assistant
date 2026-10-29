@@ -212,6 +212,106 @@ class TestToolRegistry(unittest.TestCase):
         self.assertFalse(res.is_authorized)
         self.assertIn("User denied authorization", res.error)
 
+    def test_inspect_dependencies_manifest_symlink_rejected(self):
+        # Remove existing requirements.txt
+        req_file = self.repo_dir / "requirements.txt"
+        if req_file.exists():
+            req_file.unlink()
+
+        with tempfile.TemporaryDirectory() as outside_dir:
+            secret_file = Path(outside_dir) / "secret_requirements.txt"
+            secret_file.write_text("SUPER_SECRET_TOKEN=xyz123\n", encoding="utf-8")
+
+            try:
+                req_file.symlink_to(secret_file)
+            except (OSError, NotImplementedError):
+                self.skipTest("Symlinks not supported in this environment.")
+
+            call = ToolCall(tool_name="inspect_dependencies", arguments={})
+            res = self.registry.execute_tool(call)
+            self.assertTrue(res.success)
+            # Manifest symlink pointing outside must be skipped and never leaked
+            self.assertNotIn("SUPER_SECRET_TOKEN", res.output)
+
+    def test_run_selected_tests_disposable_sandbox_isolation(self):
+        side_effect_test = self.repo_dir / "tests" / "unit" / "test_side_effect.py"
+        side_effect_test.write_text(
+            "import unittest\nfrom pathlib import Path\n\n"
+            "class TestSideEffect(unittest.TestCase):\n"
+            "    def test_create_file(self):\n"
+            "        Path('sandbox_artifact.txt').write_text('mutated', encoding='utf-8')\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+
+        call = ToolCall(
+            tool_name="run_selected_tests",
+            arguments={"command": "python -m unittest tests/unit/test_side_effect.py"},
+        )
+        res = self.registry.execute_tool(call)
+        self.assertTrue(res.success)
+        self.assertIn("PASSED", res.output)
+
+        # Confirm target repository was NOT mutated by tests executed in the disposable sandbox
+        artifact = self.repo_dir / "sandbox_artifact.txt"
+        self.assertFalse(artifact.exists(), "Disposable sandbox failed: side effect leaked into repo directory!")
+
+    def test_apply_patch_multi_file_atomic_success(self):
+        multi_diff = (
+            "--- a/src/calc.py\n"
+            "+++ b/src/calc.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            " def add(a: int, b: int) -> int:\n"
+            "+    # First file modified\n"
+            "     return a + b\n"
+            "--- /dev/null\n"
+            "+++ b/src/helper.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+def get_version() -> str:\n"
+            "+    return '1.0.0'\n"
+        )
+        call = ToolCall(tool_name="apply_patch", arguments={"unified_diff": multi_diff})
+        res = self.registry.execute_tool(call)
+        self.assertTrue(res.success)
+        self.assertIn("Successfully applied patch to 2 file(s)", res.output)
+
+        self.assertIn("# First file modified", self.calc_file.read_text(encoding="utf-8"))
+        helper_file = self.repo_dir / "src" / "helper.py"
+        self.assertTrue(helper_file.exists())
+        self.assertIn("def get_version", helper_file.read_text(encoding="utf-8"))
+
+    def test_apply_patch_multi_file_atomic_failure_leaves_file1_unchanged(self):
+        calc_original = self.calc_file.read_text(encoding="utf-8")
+
+        # Multi-file diff where File 1 is valid, but File 2 contains syntax error
+        bad_multi_diff = (
+            "--- a/src/calc.py\n"
+            "+++ b/src/calc.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            " def add(a: int, b: int) -> int:\n"
+            "+    # Should not be applied\n"
+            "     return a + b\n"
+            "--- /dev/null\n"
+            "+++ b/src/bad_syntax.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+def broken_syntax(:\n"
+            "+    return 42\n"
+        )
+        call = ToolCall(tool_name="apply_patch", arguments={"unified_diff": bad_multi_diff})
+        res = self.registry.execute_tool(call)
+
+        self.assertFalse(res.success)
+        self.assertIn("failed AST validation", res.error)
+
+        # Critical atomicity guarantee: File 1 was NEVER touched on disk!
+        calc_after = self.calc_file.read_text(encoding="utf-8")
+        self.assertEqual(calc_original, calc_after)
+        self.assertNotIn("# Should not be applied", calc_after)
+
+        # Bad file was never created on disk
+        bad_file = self.repo_dir / "src" / "bad_syntax.py"
+        self.assertFalse(bad_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
