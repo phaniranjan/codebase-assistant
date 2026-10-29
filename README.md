@@ -24,7 +24,7 @@ flowchart TD
 
     %% FLOW 2: Runtime Flow
     subgraph Flow2["2. Runtime Execution Flow"]
-        DevRequest(["Developer Request\n(Question, Code Request, Debug Trace)"]) --> AgentCore["AgentCore [Planned Phase 6]\n(Workflow Coordinator)"]
+        DevRequest(["Developer Request\n(Question, Code Request, Debug Trace)"]) --> AgentCore["AgentCore [Implemented]\n(Workflow Coordinator)"]
         
         AgentCore -.-> Retriever["Hybrid Retriever [Implemented]\n(Cosine Vector + BM25/Symbol Search)"]
         LocalIndex -.->|Read Index| Retriever
@@ -41,10 +41,10 @@ flowchart TD
         TestGen -.-> DevResponse
         
         %% Tool Execution Loop
-        AgentCore -.->|Requires Tool| ToolManager["Tool Manager [Planned Phase 6]\n(Tool Dispatcher)"]
-        ToolManager -.-> PolicyCheck{"Policy Engine [Planned Phase 6]\n(Command Allowlist & Path Restrict)"}
+        AgentCore -.->|Requires Tool| ToolManager["Tool Manager [Implemented]\n(Tool Dispatcher)"]
+        ToolManager -.-> PolicyCheck{"Policy Engine [Implemented]\n(Command Allowlist & Path Restrict)"}
         PolicyCheck -.->|Policy Denied| PolicyRejection["Policy Rejection\n(Outright deny with security log)"] -.-> AgentCore
-        PolicyCheck -.->|Policy Passed| PermCheck{"Permission Check [Planned Phase 6]\n(Sensitive Operation?)"}
+        PolicyCheck -.->|Policy Passed| PermCheck{"Permission Check [Implemented]\n(Sensitive Operation?)"}
         PermCheck -.->|Read-only: search, read_file| ToolExec["Tool Execution\n(Isolated execution)"]
         PermCheck -.->|Consequential: test exec, file patch| UserApproval{"User Authorization\n(Approve execution?)"}
         UserApproval -.->|Approved| ToolExec
@@ -75,13 +75,13 @@ flowchart TD
 | **Logical Chunker** | ✅ Implemented | Enclosing symbol scope preservation, line numbers, deterministic IDs, oversized chunk sub-splitting. |
 | **Incremental Indexer** | ✅ Implemented | SHA-256 change detection, stale chunk eviction for modified/deleted/renamed files, repo identity checks. |
 | **Local Cache Storage** | ✅ Implemented | Local `.codebase_assistant/` manifest, chunks, and vector store. |
-| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`, `ask`, `evaluate`, `propose-code`, `propose-tests`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, hybrid search, repository Q&A, RAG evaluation, and code/test proposals. |
+| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`, `ask`, `evaluate`, `propose-code`, `propose-tests`, `agent`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, hybrid search, repository Q&A, RAG evaluation, code/test proposals, and autonomous agent orchestration. |
 | **Embeddings & Vector Store** | ✅ Implemented | Pluggable providers (Gemini & deterministic mock), local cosine vector store. |
 | **BM25 & Hybrid Retriever** | ✅ Implemented | CodeTokenizer, Okapi BM25 keyword search, Reciprocal Rank Fusion (RRF), context assembler. |
 | **Gemini Integration & Grounded Q&A** | ✅ Implemented | Grounded prompt building, prompt injection barrier, citation validation, GeminiClient & QA engine. |
 | **RAG Evaluation Framework & Quality Gates** | ✅ Implemented | Golden dataset (25 cases), chunk/file metrics, citation boundary checks, abstention matrix, injection containment, quality gates, and reports. |
 | **Code & Test Proposals** | ✅ Implemented | Context-aware unified diff generation, AST syntax verification, targeted test suite generation, and CLI commands (`propose-code`, `propose-tests`). |
-| **Controlled Tools & Execution Sandbox** | ⏳ Planned (Phase 6) | Policy engine, permissions, and isolated command execution. |
+| **Controlled Tools & Execution Sandbox** | ✅ Implemented | ReAct coordinator, PolicyEngine, PermissionEngine, and isolated command execution. |
 
 ---
 
@@ -237,6 +237,54 @@ python -m codebase_assistant.cli propose-tests src/pipeline.py /path/to/reposito
 # Override testing framework convention and save patch
 python -m codebase_assistant.cli propose-tests src/pipeline.py /path/to/repository --framework pytest --output-patch /path/to/external/test_pipeline.patch
 ```
+
+### 9. Autonomous Agent Orchestration
+Run the autonomous ReAct agent loop with controlled tools and policy sandboxing:
+```bash
+# Run agent in interactive authorization mode (prompts before running tests or applying patches)
+python -m codebase_assistant.cli agent "Find the retriever implementation and propose test coverage" /path/to/repository
+
+# Run agent with auto-approved consequential actions (for automated CI pipelines)
+python -m codebase_assistant.cli agent "Analyze project dependencies and locate authentication logic" /path/to/repository --auto-approve
+
+# Offline execution using deterministic mock provider
+python -m codebase_assistant.cli agent "Inspect calculator module" /path/to/repository --provider mock --auto-approve
+```
+
+---
+
+## 🤖 Autonomous Agent Orchestration & Security Sandbox (Phase 6)
+
+Phase 6 introduces the central agent coordinator, controlled tool registry, and multi-tier permission engine adhering strictly to the operating guidelines defined in [`AGENTS.md`](file:///wsl.localhost/Ubuntu-26.04/home/phaniranjan/AI/codebase_assistant/AGENTS.md).
+
+### 1. Tool Permission Hierarchy
+Tools are partitioned into three distinct risk tiers:
+- **`READ_ONLY` (Automatic execution, zero side-effects)**:
+  - `search_codebase`: Scoped hybrid retrieval over indexed chunks.
+  - `read_source_file`: Workspace-contained source file reading with line range slicing.
+  - `find_related_tests`: Read-only symbol and test file discovery.
+  - `inspect_dependencies`: Dependency manifest inspection (`pyproject.toml`, `requirements.txt`).
+- **`PROPOSAL` (Automatic execution, produces in-memory diffs without disk modification)**:
+  - `generate_code_proposal`: Invokes `CodeProposalGenerator` to produce an AST-verified unified diff.
+  - `generate_test_proposal`: Invokes `TestProposalGenerator` to produce a targeted test suite diff.
+- **`CONSEQUENTIAL` (Mandatory interactive user authorization required)**:
+  - `run_selected_tests`: Executes whitelisted test runner commands (`pytest`, `unittest`) in an isolated subprocess with a 30s timeout and stripped network proxies.
+  - `apply_patch`: Dry-runs unified diffs in memory, runs AST verification on Python files, and applies changes to the target repository only upon explicit user confirmation.
+
+### 2. Execution Sandbox & Security Policy (`PolicyEngine`)
+- **Command Allowlisting**: Only authorized test runners (`pytest`, `python -m unittest`, `python3 -m unittest`) are permitted.
+- **Shell Injection Defense**: Disallows shell chaining (`&&`, `;`, `||`, `|`), redirection (`>`, `<`, `>>`), subshell substitutions (`$()`, `` ` ``), and execution wrappers (`sudo`, `sh`, `bash`, `curl`, `wget`).
+- **Workspace Boundary Containment**: Enforces that all file reads, command arguments, and patch destinations resolve strictly within the target repository root, blocking relative traversal (`..`) and external symlinks.
+
+### 3. Agent Orchestration Loop (`AgentCoordinator`)
+- **ReAct Cycle**: Structured `Thought` $\rightarrow$ `Action` $\rightarrow$ `Observation` $\rightarrow$ `Final Answer` reasoning loop.
+- **Stopping Conditions**:
+  - Maximum 5 tool iterations per turn (`max_iterations = 5`).
+  - Maximum 10 reasoning steps (`max_reasoning_steps = 10`).
+  - 30-second command execution timeout (`command_timeout_seconds = 30.0`).
+  - Context token budget limit (`token_budget = 8192`).
+  - Safe termination if authorization is denied for consequential tools.
+- **Untrusted Input Barrier**: Treats all repository code and tool output as untrusted data, preventing adversarial comments from altering system instructions.
 
 ---
 
