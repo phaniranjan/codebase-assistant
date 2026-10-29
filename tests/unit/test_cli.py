@@ -153,8 +153,35 @@ class TestCLI(unittest.TestCase):
   ]
 }""", encoding="utf-8")
 
-        json_out = self.repo_dir / "report.json"
-        md_out = self.repo_dir / "report.md"
+        external_out_dir = Path(tempfile.mkdtemp())
+        json_out = external_out_dir / "report.json"
+        md_out = external_out_dir / "report.md"
+
+        try:
+            res = self.runner.invoke(
+                main,
+                [
+                    "evaluate",
+                    str(self.repo_dir),
+                    "--dataset", str(sample_dataset),
+                    "--mode", "hybrid",
+                    "--top-k", "2",
+                    "--output-json", str(json_out),
+                    "--output-markdown", str(md_out),
+                ],
+            )
+            self.assertEqual(res.exit_code, 0, res.output)
+            self.assertIn("Quality Gate Status", res.output)
+            self.assertTrue(json_out.is_file())
+            self.assertTrue(md_out.is_file())
+        finally:
+            import shutil
+            shutil.rmtree(external_out_dir, ignore_errors=True)
+
+    def test_evaluate_cli_rejects_internal_cache_dir(self):
+        sample_dataset = self.repo_dir / "test_dataset.json"
+        sample_dataset.write_text('{"version": "1.0.0", "cases": []}', encoding="utf-8")
+        internal_cache = self.repo_dir / "my_internal_cache"
 
         res = self.runner.invoke(
             main,
@@ -162,16 +189,11 @@ class TestCLI(unittest.TestCase):
                 "evaluate",
                 str(self.repo_dir),
                 "--dataset", str(sample_dataset),
-                "--mode", "hybrid",
-                "--top-k", "2",
-                "--output-json", str(json_out),
-                "--output-markdown", str(md_out),
+                "--cache-dir", str(internal_cache),
             ],
         )
-        self.assertEqual(res.exit_code, 0, res.output)
-        self.assertIn("Quality Gate Status", res.output)
-        self.assertTrue(json_out.is_file())
-        self.assertTrue(md_out.is_file())
+        self.assertEqual(res.exit_code, 1)
+        self.assertIn("Read-only invariant violation", res.output)
 
     def test_evaluate_cli_live_fails_without_key(self):
         sample_dataset = self.repo_dir / "test_dataset.json"

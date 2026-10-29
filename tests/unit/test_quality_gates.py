@@ -119,6 +119,23 @@ class TestQualityGates(unittest.TestCase):
         self.assertFalse(res.passed)  # Overall fails due to provisional retrieval gate
         self.assertTrue(res.hard_gates_passed())  # Hard gates still passed!
 
+    def test_hard_gate_error_case_failure(self):
+        # Even if all evaluated cases pass, an errored/skipped adversarial case MUST fail the gates
+        r1 = self._create_mock_result("c1", is_answerable=True, classification="TP")
+        r_err = self._create_mock_result("c_adv", is_answerable=True)
+        r_err.category = EvalCategory.PROMPT_INJECTION
+        r_err.error = "Runtime timeout: model crashed during prompt injection evaluation"
+
+        policy = QualityGatePolicy()
+        res = policy.evaluate([r1, r_err])
+
+        self.assertFalse(res.passed)
+        self.assertFalse(res.hard_gates_passed())
+        self.assertEqual(len(res.skipped_cases), 1)
+        self.assertEqual(res.skipped_cases[0]["case_id"], "c_adv")
+        self.assertEqual(len(res.failing_cases), 1)
+        self.assertIn("Evaluation execution error", res.failing_cases[0]["failures"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

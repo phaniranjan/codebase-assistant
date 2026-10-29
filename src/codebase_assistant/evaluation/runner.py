@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import tempfile
 import time
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
@@ -74,7 +75,34 @@ class EvaluationRunner:
         quality_thresholds: Optional[QualityGateThresholds] = None,
     ) -> None:
         self.repository_path = Path(repository_path).resolve()
-        self.cache_dir = Path(cache_dir).resolve() if cache_dir else self.repository_path / get_settings().cache_dir
+
+        # Strict read-only invariant: ensure cache_dir is never located inside the target repository
+        if cache_dir is not None:
+            resolved_cache = Path(cache_dir).resolve()
+            try:
+                resolved_cache.relative_to(self.repository_path)
+                raise ValueError(
+                    f"Read-only invariant violation: Evaluation cache directory '{resolved_cache}' "
+                    f"is located inside the target repository '{self.repository_path}'. "
+                    f"Evaluation must never write inside the target repository."
+                )
+            except ValueError as e:
+                if "Read-only invariant violation" in str(e):
+                    raise
+                self.cache_dir = resolved_cache
+        else:
+            default_cache = Path(".codebase_assistant/eval_cache").resolve()
+            try:
+                default_cache.relative_to(self.repository_path)
+                # Current working directory is inside target repository; safely relocate to system temp directory
+                self.cache_dir = Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "eval_cache"
+                logger.info(
+                    "Default evaluation cache was inside target repo; safely relocated to %s",
+                    self.cache_dir,
+                )
+            except ValueError:
+                self.cache_dir = default_cache
+
         self.is_live = is_live
         self.policy = QualityGatePolicy(quality_thresholds)
 

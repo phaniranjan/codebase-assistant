@@ -192,19 +192,23 @@ python -m codebase_assistant.cli ask "How does user authentication work?" /path/
 Run reproducible evaluation benchmarks across retrieval, citation grounding, abstention, and prompt-injection containment:
 ```bash
 # Offline evaluation using deterministic mock providers (zero network, fast)
+# Automatically saves reports to reports/eval_report.json and reports/eval_report.md
 python -m codebase_assistant.cli evaluate /path/to/repository
 
 # Benchmark all retrieval modes (hybrid, dense_only, sparse_only)
 python -m codebase_assistant.cli evaluate /path/to/repository --mode all
 
-# Run specific mode with custom top-k and output reports
+# Run specific mode with custom top-k and custom report output paths
 python -m codebase_assistant.cli evaluate /path/to/repository \
   --mode hybrid \
   --top-k 5 \
-  --output-json reports/eval_report.json \
-  --output-markdown reports/eval_report.md
+  --output-json custom_reports/eval_report.json \
+  --output-markdown custom_reports/eval_report.md
 
-# Enforce quality gates (exits with non-zero exit code if hard or provisional gates fail)
+# Disable writing report files to disk
+python -m codebase_assistant.cli evaluate /path/to/repository --no-report
+
+# Enforce quality gates (exits with non-zero exit code if hard or provisional gates fail, or if any case errors)
 python -m codebase_assistant.cli evaluate /path/to/repository --fail-under
 
 # Explicitly enabled live Gemini evaluation (requires GEMINI_API_KEY)
@@ -276,24 +280,27 @@ Evaluated using a full confusion matrix:
   - $\text{Unnecessary Abstention Rate} = \frac{FN}{TP + FN}$ (Target: 0%)
 
 #### D. Prompt Injection Containment
-- Verifies that adversarial payloads embedded in repository chunks or queries (e.g. `SYSTEM COMPROMISED`, `DROP TABLE`) are completely neutralized and never echoed or followed in output claims.
+- Evaluates whether adversarial instructions embedded in repository chunks or queries (e.g. system instruction overrides, canary extractions, or unauthorized state claims) were contained.
+- **Case-Specific Assertions**: Uses case-level `prohibited_claims` to check specific unauthorized attack outcomes rather than relying solely on global word blacklists. This ensures that legitimate security queries discussing commands (e.g. asking how the codebase guards against `drop table`) are not falsely flagged as compromised.
+- **Heuristic Defense**: Documented as a deterministic rule-based heuristic for known attack outcomes rather than an exhaustive security proof against novel obfuscated payloads.
 
 ### 3. Quality Gates Policy & Baseline Measurements
-The quality gate policy distinguishes between non-negotiable **Hard Gates** and **Provisional Retrieval Baselines**:
+The quality gate policy distinguishes between non-negotiable **Hard Gates** and **Provisional Retrieval Baselines**. Quality gates fail closed: any unhandled runtime error or skipped evaluation case immediately fails the gate:
 
 | Gate Metric | Threshold | Gate Type | Description |
 | :--- | :---: | :---: | :--- |
+| **Zero Case Errors** | `0` errors | **Hard Gate** | All test cases must execute successfully without runtime errors or skips. |
 | **Citation Validity Rate** | `1.0` (100%) | **Hard Gate** | Zero hallucinated citations allowed. |
 | **Citation Line Boundaries** | `1.0` (100%) | **Hard Gate** | Line ranges must fall strictly within retrieved chunk spans. |
 | **Abstention Recall** | `1.0` (100%) | **Hard Gate** | All unanswerable questions must trigger correct abstention. |
-| **Prompt Injection Containment** | `1.0` (100%) | **Hard Gate** | Zero adversarial payload execution. |
+| **Prompt Injection Containment** | `1.0` (100%) | **Hard Gate** | Zero execution of adversarial instructions or prohibited claims. |
 | **File Hit Rate@5** | `≥ 0.85` | Provisional | Baseline: hybrid `1.00`, sparse `1.00`, dense `0.95`. |
 | **File Recall@5** | `≥ 0.70` | Provisional | Baseline: hybrid `0.94`, sparse `0.91`, dense `0.89`. |
 | **File MRR** | `≥ 0.65` | Provisional | Baseline: hybrid `0.81`, sparse `0.85`, dense `0.76`. |
 
 ### 4. Read-Only Protection & Offline Determinism
-- **Cryptographic Read-Only Verification**: The evaluation test suite computes SHA-256 digests of every file in the target repository before and after runs. Any modification raises an immediate assertion error.
-- **External Cache Location**: All evaluation index caches and reports are stored strictly outside the target repository (defaulting to `.codebase_assistant/eval_cache` in the current working directory).
+- **Cryptographic Read-Only Tree Verification**: The integration test hashes every single file in the target repository (including hidden files, `.git`, config, and dependencies) before and after evaluation runs. Any file modification, creation, or deletion immediately triggers an assertion failure.
+- **Cache & Report Relocation**: Both `EvaluationRunner` and the `evaluate` CLI resolve paths and reject any custom `--cache-dir` located inside the target repository. If default caches or reports would fall inside the target tree, they are safely relocated to external temporary storage.
 - **Zero-Network Offline Mode**: Default evaluation runs completely offline with deterministic mock embeddings and synthesis.
 - **Explicit Live Mode**: Live Gemini evaluation requires `--live` and a valid `GEMINI_API_KEY`. It records model name, provider, dataset version, and token usage, and fails explicitly on API errors without silent fallback.
 

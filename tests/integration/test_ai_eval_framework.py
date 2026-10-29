@@ -1,6 +1,7 @@
 """Integration test verifying end-to-end RAG evaluation and read-only protection of ai-evaluation."""
 
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -28,20 +29,29 @@ class TestAiEvalFrameworkIntegration(unittest.TestCase):
                 cls.ai_eval_dir = cand
                 break
 
+    def _snapshot_target_tree(self, target_dir: Path) -> dict[str, str]:
+        """Cryptographically hash every single file in the target repository tree (including hidden/ignored files)."""
+        hashes = {}
+        ignored_virtualenvs = {"deepeval_venv", ".venv", "venv", "env"}
+        for root, dirs, files in os.walk(target_dir):
+            # Skip recursing into third-party installed virtualenv package trees
+            dirs[:] = [d for d in dirs if d not in ignored_virtualenvs]
+            for f in files:
+                p = Path(root) / f
+                rel = p.relative_to(target_dir).as_posix()
+                try:
+                    content = p.read_bytes()
+                    hashes[rel] = hashlib.sha256(content).hexdigest()
+                except (PermissionError, OSError):
+                    pass
+        return hashes
+
     def setUp(self):
         if self.ai_eval_dir is None:
             self.skipTest("ai-evaluation repository not found on local path.")
 
-        # 1. Take cryptographic SHA-256 snapshot of all target repository files
-        scanner = RepositoryScanner(self.ai_eval_dir)
-        self.eligible_files, _, _ = scanner.scan()
-
-        self.initial_hashes = {}
-        for rel_p in self.eligible_files:
-            abs_p = self.ai_eval_dir / rel_p
-            if abs_p.is_file():
-                content = abs_p.read_bytes()
-                self.initial_hashes[rel_p.as_posix()] = hashlib.sha256(content).hexdigest()
+        # 1. Take cryptographic SHA-256 snapshot of all target repository files (including hidden/ignored)
+        self.initial_hashes = self._snapshot_target_tree(self.ai_eval_dir)
 
         # 2. Allocate isolated temporary cache directory outside target repository
         self.temp_cache = tempfile.TemporaryDirectory()
@@ -50,18 +60,13 @@ class TestAiEvalFrameworkIntegration(unittest.TestCase):
     def tearDown(self):
         self.temp_cache.cleanup()
 
-        # Strict cryptographic verification that target repository was 100% read-only
-        current_hashes = {}
-        for rel_p in self.eligible_files:
-            abs_p = self.ai_eval_dir / rel_p
-            if abs_p.is_file():
-                content = abs_p.read_bytes()
-                current_hashes[rel_p.as_posix()] = hashlib.sha256(content).hexdigest()
+        # Strict cryptographic verification that target repository was 100% read-only across all files
+        current_hashes = self._snapshot_target_tree(self.ai_eval_dir)
 
         self.assertEqual(
             self.initial_hashes,
             current_hashes,
-            "Target repository was modified during evaluation! SHA-256 mismatch detected.",
+            "Target repository was modified during evaluation! SHA-256 mismatch or file addition/deletion detected.",
         )
 
     def test_offline_golden_dataset_evaluation_and_hard_gates(self):

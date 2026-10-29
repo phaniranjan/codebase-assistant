@@ -82,6 +82,16 @@ class TestEvaluationRunner(unittest.TestCase):
                 EvaluationRunner(repository_path=self.repo_dir, is_live=True)
             self.assertIn("GEMINI_API_KEY environment variable is not set", str(ctx.exception))
 
+    def test_runner_rejects_cache_dir_inside_target_repo(self):
+        inside_cache = self.repo_dir / ".codebase_assistant"
+        with self.assertRaises(ValueError) as ctx:
+            EvaluationRunner(
+                repository_path=self.repo_dir,
+                cache_dir=inside_cache,
+                is_live=False,
+            )
+        self.assertIn("Read-only invariant violation", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

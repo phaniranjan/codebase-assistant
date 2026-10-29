@@ -38,6 +38,7 @@ class GoldenTestCase(BaseModel):
     expected_symbols: List[str] = Field(default_factory=list)
     expected_facts: List[str] = Field(default_factory=list)
     contains_prompt_injection: bool = False
+    prohibited_claims: List[str] = Field(default_factory=list)
     dataset_version: str = "1.0.0"
 
     @field_validator("expected_files", mode="before")

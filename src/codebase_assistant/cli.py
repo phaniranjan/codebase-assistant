@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import tempfile
 import click
 
 # Ensure utf-8 terminal output on Windows consoles
@@ -521,8 +522,9 @@ def ask(
 @click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
 @click.option("--live", is_flag=True, default=False, help="Explicitly enable live Gemini evaluation (requires GEMINI_API_KEY).")
 @click.option("--fail-under", is_flag=True, default=False, help="Enforce quality gates and exit with code 1 if gates fail.")
-@click.option("--output-json", default=None, help="File path to save JSON evaluation report.")
-@click.option("--output-markdown", default=None, help="File path to save human-readable Markdown summary report.")
+@click.option("--output-json", default="reports/eval_report.json", help="File path to save JSON evaluation report (default: reports/eval_report.json).")
+@click.option("--output-markdown", default="reports/eval_report.md", help="File path to save human-readable Markdown summary report (default: reports/eval_report.md).")
+@click.option("--no-report", is_flag=True, default=False, help="Disable saving evaluation report files to disk.")
 @click.option("--cache-dir", default=None, help="Custom cache directory.")
 def evaluate(
     repo_path: str | None,
@@ -535,12 +537,55 @@ def evaluate(
     fail_under: bool,
     output_json: str | None,
     output_markdown: str | None,
+    no_report: bool,
     cache_dir: str | None,
 ):
     """Run reproducible RAG evaluation benchmark and quality gate checks."""
     target_repo = Path(repo_path_opt or repo_path or ".").resolve()
-    # Read-only protection: default evaluation cache to local directory outside target repository
-    cache = Path(cache_dir).resolve() if cache_dir else Path(".codebase_assistant/eval_cache").resolve()
+
+    # Read-only protection: ensure evaluation cache is never inside target repository
+    if cache_dir:
+        resolved_cache = Path(cache_dir).resolve()
+        try:
+            resolved_cache.relative_to(target_repo)
+            print(
+                f"\n[Error] Read-only invariant violation: Cache directory '{resolved_cache}' "
+                f"is located inside the target repository '{target_repo}'. Evaluation must not write into the target repository.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except ValueError:
+            cache = resolved_cache
+    else:
+        default_cache = Path(".codebase_assistant/eval_cache").resolve()
+        try:
+            default_cache.relative_to(target_repo)
+            # CWD is inside target_repo! Safely relocate to system temp directory
+            cache = Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "eval_cache"
+        except ValueError:
+            cache = default_cache
+
+    # Read-only protection: ensure report output paths are not inside target repository
+    final_output_json = None
+    final_output_markdown = None
+    if not no_report:
+        if output_json:
+            p_json = Path(output_json).resolve()
+            try:
+                p_json.relative_to(target_repo)
+                p_json = Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "reports" / Path(output_json).name
+            except ValueError:
+                pass
+            final_output_json = str(p_json)
+
+        if output_markdown:
+            p_md = Path(output_markdown).resolve()
+            try:
+                p_md.relative_to(target_repo)
+                p_md = Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "reports" / Path(output_markdown).name
+            except ValueError:
+                pass
+            final_output_markdown = str(p_md)
 
     print_info("Target Repository", str(target_repo))
     print_info("Evaluation Mode", "LIVE GEMINI" if live else "OFFLINE MOCK")
@@ -643,16 +688,16 @@ def evaluate(
                 print(f"  [{res_txt:4}] {g.gate_name:32}: actual={g.actual_value:.4f} (thresh={g.threshold:.2f})")
 
         # Save Report artifacts for the primary mode
-        if output_json or output_markdown:
+        if final_output_json or final_output_markdown:
             EvaluationReporter.save_reports(
                 report=report,
-                json_path=output_json,
-                markdown_path=output_markdown,
+                json_path=final_output_json,
+                markdown_path=final_output_markdown,
             )
-            if output_json:
-                print_info("JSON Report saved to:", str(output_json))
-            if output_markdown:
-                print_info("Markdown Report saved to:", str(output_markdown))
+            if final_output_json:
+                print_info("JSON Report saved to:", str(final_output_json))
+            if final_output_markdown:
+                print_info("Markdown Report saved to:", str(final_output_markdown))
 
     # Quality Gate exit condition
     if fail_under:
