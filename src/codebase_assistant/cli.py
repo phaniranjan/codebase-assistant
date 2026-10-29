@@ -1,6 +1,7 @@
 """Command-line interface for Codebase Assistant."""
 
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -24,6 +25,13 @@ except ImportError:
     rich_available = False
     console = None
 
+from codebase_assistant.agent import (
+    AgentConfig,
+    AgentCoordinator,
+    PermissionEngine,
+    PolicyEngine,
+    ToolRegistry,
+)
 from codebase_assistant.config import get_settings
 from codebase_assistant.embeddings.gemini import GeminiEmbeddingProvider
 from codebase_assistant.embeddings.manager import EmbeddingManager
@@ -1095,6 +1103,165 @@ def propose_tests(
         target_repo=target_repo,
         output_patch=output_patch,
     )
+
+
+@main.command(name="agent")
+@click.argument("task")
+@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
+@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.option(
+    "--provider",
+    "provider_type",
+    default="gemini",
+    type=click.Choice(["gemini", "mock"], case_sensitive=False),
+    help="Provider for agent reasoning and embeddings.",
+)
+@click.option("--allow-fallback", is_flag=True, default=False, help="Allow falling back to mock provider if Gemini initialization fails.")
+@click.option("--auto-approve", is_flag=True, default=False, help="Auto-approve consequential tool actions (e.g. running tests, applying patches).")
+@click.option("--max-iterations", default=5, type=int, help="Maximum tool executions per turn (default: 5).")
+@click.option("--max-steps", default=10, type=int, help="Maximum reasoning steps (default: 10).")
+@click.option("--timeout", default=30.0, type=float, help="Command execution timeout in seconds (default: 30.0s).")
+@click.option("--budget", default=8192, type=int, help="Token context budget limit (default: 8192).")
+@click.option("--cache-dir", default=None, help="Custom cache directory.")
+def agent(
+    task: str,
+    repo_path: str | None,
+    repo_path_opt: str | None,
+    provider_type: str,
+    allow_fallback: bool,
+    auto_approve: bool,
+    max_iterations: int,
+    max_steps: int,
+    timeout: float,
+    budget: int,
+    cache_dir: str | None,
+):
+    """Execute an autonomous coding agent loop with controlled tools and safety sandbox."""
+    target_repo = Path(repo_path_opt or repo_path or ".").resolve()
+    print_info("Target Repository", str(target_repo))
+    print_info("Agent Task", task)
+    print_info("Consequential Mode", "Auto-Approve" if auto_approve else "Interactive Approval")
+
+    cache = _resolve_proposal_cache(target_repo, cache_dir)
+
+    indexer = IncrementalIndexer(target_repo, cache_dir=cache)
+    chunks = indexer.load_chunks()
+    if not chunks:
+        indexer.index()
+        chunks = indexer.load_chunks()
+
+    if not chunks:
+        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.", file=sys.stderr)
+        sys.exit(1)
+
+    if provider_type.lower() == "mock":
+        emb_provider = MockEmbeddingProvider()
+        llm_client = MockGeminiClient()
+    else:
+        try:
+            emb_provider = GeminiEmbeddingProvider()
+            llm_client = GeminiClient()
+            emb_provider._get_client()
+            llm_client._get_client()
+        except Exception as e:
+            if allow_fallback:
+                print(f"[Warning] {e}")
+                print("Falling back to Mock providers for offline execution.")
+                emb_provider = MockEmbeddingProvider()
+                llm_client = MockGeminiClient()
+            else:
+                print(f"\n[Error] {e}", file=sys.stderr)
+                print("Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                sys.exit(1)
+
+    manager = EmbeddingManager(target_repo, cache_dir=cache, provider=emb_provider)
+    vector_store = manager.load_vector_store()
+    if vector_store.count() == 0:
+        print("Notice: Vector store is empty. Generating embeddings first...")
+        manager.sync()
+        vector_store = manager.load_vector_store()
+
+    try:
+        retriever = HybridRetriever(
+            chunks=chunks,
+            vector_store=vector_store,
+            embedding_provider=emb_provider,
+        )
+    except ValueError as e:
+        print(f"Error initializing retriever: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    code_gen = CodeProposalGenerator(
+        repository_path=target_repo,
+        retriever=retriever,
+        llm_client=llm_client,
+    )
+    test_gen = TestProposalGenerator(
+        repository_path=target_repo,
+        retriever=retriever,
+        llm_client=llm_client,
+    )
+
+    policy_engine = PolicyEngine(target_repo)
+    perm_engine = PermissionEngine(auto_approve_consequential=auto_approve)
+
+    tool_registry = ToolRegistry(
+        repository_path=target_repo,
+        retriever=retriever,
+        code_generator=code_gen,
+        test_generator=test_gen,
+        policy_engine=policy_engine,
+        permission_engine=perm_engine,
+        command_timeout_seconds=timeout,
+    )
+
+    config = AgentConfig(
+        max_iterations=max_iterations,
+        max_reasoning_steps=max_steps,
+        command_timeout_seconds=timeout,
+        token_budget=budget,
+        auto_approve_consequential=auto_approve,
+    )
+
+    coordinator = AgentCoordinator(
+        tool_registry=tool_registry,
+        llm_client=llm_client,
+        config=config,
+    )
+
+    print("\n--- Executing Agent Loop ---")
+    response = coordinator.run(task)
+
+    # Display steps
+    for step in response.steps:
+        print(f"\n[Step {step.step_number}]")
+        if step.thought:
+            print(f"Thought: {step.thought}")
+        if step.tool_call:
+            action_desc = f"{step.tool_call.tool_name}({json.dumps(step.tool_call.arguments)})"
+            if rich_available and console:
+                console.print(f"[bold cyan]Action:[/bold cyan] {action_desc}")
+            else:
+                print(f"Action: {action_desc}")
+        if step.tool_result:
+            res = step.tool_result
+            if res.success:
+                print(f"Observation:\n{res.output}")
+            else:
+                err_text = f"ERROR: {res.error}"
+                if rich_available and console:
+                    console.print(f"[bold red]Observation Error:[/bold red] {err_text}")
+                else:
+                    print(f"Observation Error: {err_text}")
+
+    print("\n" + "=" * 60)
+    print_success("Stopping Reason:", response.stopping_reason.value.upper())
+    print_info("Total Steps:", str(response.total_steps))
+    print_info("Total Tool Calls:", str(response.total_tool_calls))
+    print_info("Duration:", f"{response.total_duration_seconds:.2f}s")
+
+    print("\n--- Final Answer ---")
+    print(response.final_answer)
 
 
 if __name__ == "__main__":

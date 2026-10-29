@@ -3,7 +3,7 @@
 import math
 from pathlib import Path
 import re
-from typing import Iterator, Optional
+from typing import Iterator, List, Optional
 
 from codebase_assistant.llm.client import BaseLLMClient
 from codebase_assistant.llm.models import LLMResponse
@@ -18,9 +18,11 @@ class MockGeminiClient(BaseLLMClient):
         self,
         model_name: str = "mock-gemini-v1",
         canned_response: Optional[str] = None,
+        responses_queue: Optional[List[str]] = None,
     ) -> None:
         self._model_name = model_name
         self.canned_response = canned_response
+        self.responses_queue = list(responses_queue) if responses_queue is not None else None
 
     @property
     def model_name(self) -> str:
@@ -51,11 +53,45 @@ class MockGeminiClient(BaseLLMClient):
         return cleaned.strip()
 
     def _synthesize_answer(self, prompt: str) -> str:
-        """Synthesize a grounded answer or code proposal based on prompt type."""
+        """Synthesize a grounded answer, code proposal, or agent step based on prompt type."""
+        if self.responses_queue:
+            return self.responses_queue.pop(0)
+
         if self.canned_response is not None:
             return self.canned_response
 
-        # 1. Handle Code Proposal Generation
+        # 1. Handle Agent Orchestration Loop (ReAct)
+        if "AVAILABLE TOOLS:" in prompt and "[DEVELOPER TASK]" in prompt:
+            task_match = re.search(r"\[DEVELOPER TASK\]\s*(.+?)\s*\[END DEVELOPER TASK\]", prompt, re.DOTALL)
+            task_str = task_match.group(1).strip() if task_match else "developer task"
+
+            if "Observation:" in prompt:
+                # Prior tool observation received; summarize and complete
+                return (
+                    "Thought: I have evaluated the observation and have sufficient evidence to complete the task.\n"
+                    f"Final Answer: Task '{task_str}' has been resolved based on codebase analysis and tool execution."
+                )
+
+            # First turn: decide action based on task phrasing
+            task_lower = task_str.lower()
+            if "dependency" in task_lower or "dependencies" in task_lower or "manifest" in task_lower:
+                return "Thought: I should inspect project dependencies.\nAction: inspect_dependencies({})"
+            if "read" in task_lower or "view" in task_lower:
+                file_match = re.search(r"['\"]([^'\"]+\.py)['\"]", task_str)
+                f_path = file_match.group(1) if file_match else "src/main.py"
+                return f'Thought: I need to inspect the file.\nAction: read_source_file({{"file_path": "{f_path}"}})'
+            if "test" in task_lower and ("run" in task_lower or "execute" in task_lower):
+                return 'Thought: I will run the test suite.\nAction: run_selected_tests({"command": "python -m unittest discover tests/unit"})'
+            if "propose test" in task_lower:
+                return 'Thought: I will generate unit tests.\nAction: generate_test_proposal({"source_file": "src/main.py"})'
+            if "propose code" in task_lower or "modify" in task_lower:
+                return f'Thought: I will generate a code proposal.\nAction: generate_code_proposal({{"task": "{task_str}"}})'
+
+            # Default initial step: search codebase
+            query_word = task_str.split()[0] if task_str.split() else "main"
+            return f'Thought: I should search the repository for relevant code symbols.\nAction: search_codebase({{"query": "{query_word}"}})'
+
+        # 2. Handle Code Proposal Generation
         if "[DEVELOPER TASK]" in prompt:
             task_match = re.search(r"\[DEVELOPER TASK\]\s*(.+?)\s*\[END DEVELOPER TASK\]", prompt, re.DOTALL)
             task_str = task_match.group(1).strip() if task_match else "propose change"
