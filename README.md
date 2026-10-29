@@ -49,12 +49,12 @@ flowchart TD
     end
 
     %% FLOW 3: Offline Evaluation Flow
-    subgraph Flow3["3. Offline Evaluation Loop [Planned Phase 7]"]
-        GoldenData[("Golden Dataset\n(evals/golden_questions.json)")] -.-> EvalRunner["Evaluation Runner [Planned Phase 7]\n(Pytest / CLI / CI harness)"]
-        EvalRunner -.->|Benchmark Retrieval| Retriever
-        EvalRunner -.->|Benchmark End-to-End| AgentCore
-        EvalRunner -.-> EvalMetrics["Quality Metrics [Planned Phase 7]\n(Precision@k, Recall@k, Faithfulness, Code Validity)"]
-        EvalMetrics -.-> QualityReport["Quality Report & Regression Check"]
+    subgraph Flow3["3. Offline Evaluation & Quality Gate Flow [Implemented]"]
+        GoldenData[("Golden Dataset [Implemented]\n(data/golden_dataset.json)")] --> EvalRunner["Evaluation Runner [Implemented]\n(EvaluationRunner / CLI evaluate)"]
+        EvalRunner -->|Benchmark Retrieval| Retriever["Hybrid Retriever"]
+        EvalRunner -->|Benchmark Q&A| QAEngine["CodebaseQAEngine"]
+        EvalRunner --> EvalMetrics["Metrics & Quality Gates [Implemented]\n(Chunk/File Metrics, Citations, Abstention, Injections)"]
+        EvalMetrics --> QualityReport["Quality Gate Report\n(eval_report.json + Markdown)"]
     end
 ```
 
@@ -71,13 +71,13 @@ flowchart TD
 | **Logical Chunker** | ✅ Implemented | Enclosing symbol scope preservation, line numbers, deterministic IDs, oversized chunk sub-splitting. |
 | **Incremental Indexer** | ✅ Implemented | SHA-256 change detection, stale chunk eviction for modified/deleted/renamed files, repo identity checks. |
 | **Local Cache Storage** | ✅ Implemented | Local `.codebase_assistant/` manifest, chunks, and vector store. |
-| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`, `ask`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, hybrid search, and repository Q&A. |
+| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`, `ask`, `evaluate`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, hybrid search, repository Q&A, and RAG evaluation. |
 | **Embeddings & Vector Store** | ✅ Implemented | Pluggable providers (Gemini & deterministic mock), local cosine vector store. |
 | **BM25 & Hybrid Retriever** | ✅ Implemented | CodeTokenizer, Okapi BM25 keyword search, Reciprocal Rank Fusion (RRF), context assembler. |
 | **Gemini Integration & Grounded Q&A** | ✅ Implemented | Grounded prompt building, prompt injection barrier, citation validation, GeminiClient & QA engine. |
-| **Code & Test Proposals** | ⏳ Planned (Phase 4) | Unified git diff generation and pytest test generation. |
-| **Controlled Tools & Execution Sandbox** | ⏳ Planned (Phase 5) | Policy engine, permissions, and isolated command execution. |
-| **Evaluation Suite & Benchmarks** | ⏳ Planned (Phase 6) | Golden dataset benchmarks for retrieval and groundedness. |
+| **RAG Evaluation Framework & Quality Gates** | ✅ Implemented | Golden dataset (25 cases), chunk/file metrics, citation boundary checks, abstention matrix, injection containment, quality gates, and reports. |
+| **Code & Test Proposals** | ⏳ Planned (Phase 5) | Unified git diff generation and pytest test generation. |
+| **Controlled Tools & Execution Sandbox** | ⏳ Planned (Phase 6) | Policy engine, permissions, and isolated command execution. |
 
 ---
 
@@ -187,6 +187,122 @@ python -m codebase_assistant.cli ask "Explain the BM25 scoring algorithm" /path/
 # Completely offline testing with mock provider (zero API keys needed)
 python -m codebase_assistant.cli ask "How does user authentication work?" /path/to/repository --provider mock
 ```
+
+### 7. RAG Evaluation & Quality Gates
+Run reproducible evaluation benchmarks across retrieval, citation grounding, abstention, and prompt-injection containment:
+```bash
+# Offline evaluation using deterministic mock providers (zero network, fast)
+# Automatically saves reports to reports/eval_report.json and reports/eval_report.md
+python -m codebase_assistant.cli evaluate /path/to/repository
+
+# Benchmark all retrieval modes (hybrid, dense_only, sparse_only)
+python -m codebase_assistant.cli evaluate /path/to/repository --mode all
+
+# Run specific mode with custom top-k and custom report output paths
+python -m codebase_assistant.cli evaluate /path/to/repository \
+  --mode hybrid \
+  --top-k 5 \
+  --output-json custom_reports/eval_report.json \
+  --output-markdown custom_reports/eval_report.md
+
+# Disable writing report files to disk
+python -m codebase_assistant.cli evaluate /path/to/repository --no-report
+
+# Enforce quality gates (exits with non-zero exit code if hard or provisional gates fail, or if any case errors)
+python -m codebase_assistant.cli evaluate /path/to/repository --fail-under
+
+# Explicitly enabled live Gemini evaluation (requires GEMINI_API_KEY)
+python -m codebase_assistant.cli evaluate /path/to/repository --live
+```
+
+---
+
+## 📊 Evaluation Framework & Quality Gates
+
+The Phase 4 evaluation framework provides reproducible, deterministic offline and opt-in live benchmarking for codebase retrieval and grounded Q&A.
+
+### 1. Golden Evaluation Dataset
+The golden dataset is versioned in [`data/golden_dataset.json`](file:///wsl.localhost/Ubuntu-26.04/home/phaniranjan/AI/codebase_assistant/data/golden_dataset.json) (current version `1.0.0`). It contains 25 grounded test cases across 7 categories:
+- **`architecture`** (4 cases): Module responsibilities, high-level pipeline flow, and component relationships.
+- **`symbol_lookup`** (4 cases): Class, function, method definitions, signatures, and symbol locations.
+- **`data_flow`** (3 cases): Execution sequences, intermediate transformations, and data structures.
+- **`configuration`** (3 cases): Settings, environment variables, default parameters, and CLI flags.
+- **`error_handling`** (4 cases): Exception hierarchies, defensive fallbacks, and recovery mechanisms.
+- **`unanswerable`** (4 cases): Questions requiring knowledge outside the repository (e.g. Kubernetes configs, Stripe billing, external Redis clusters, PyTorch training pipelines).
+- **`prompt_injection`** (3 cases): Deterministic adversarial attacks attempting system instruction override, database exfiltration, or role redirection.
+
+#### Adding New Dataset Cases
+To add test cases, append entries to `data/golden_dataset.json`:
+```json
+{
+  "id": "eval-custom-001",
+  "question": "What is the purpose of the evaluate CLI command?",
+  "category": "configuration",
+  "is_answerable": true,
+  "expected_files": ["src/codebase_assistant/cli.py"],
+  "expected_symbols": ["evaluate"],
+  "expected_facts": ["RAG evaluation", "--mode", "--fail-under"],
+  "dataset_version": "1.0.0"
+}
+```
+Validate dataset cases against the repository using:
+```bash
+python -m unittest tests/unit/test_eval_dataset.py
+```
+
+### 2. Comprehensive Metrics
+Metrics are computed separately across retrieval, citations, abstention, and adversarial containment:
+
+#### A. Retrieval Metrics (Separate Chunk & File Levels)
+- **Chunk-Level**: `Recall@K`, `Precision@K`, `MRR`, `Hit Rate@K` computed over retrieved vs relevant chunk IDs.
+- **File-Level (Deduplicated)**: Normalized file paths (`/`-separated) deduplicated per retrieval ranking.
+  - $\text{Recall}@K = \frac{|\mathcal{F}_{\text{retrieved@K}} \cap \mathcal{F}_{\text{expected}}|}{|\mathcal{F}_{\text{expected}}|}$
+  - $\text{Precision}@K = \frac{|\mathcal{F}_{\text{retrieved@K}} \cap \mathcal{F}_{\text{expected}}|}{K}$
+  - $\text{MRR} = \frac{1}{\text{rank of first relevant file}}$ ($0$ if none relevant in top-$K$).
+  - $\text{Hit Rate}@K = 1.0$ if any expected file is in top-$K$, else $0.0$.
+  - **Denominator Semantics**: For unanswerable queries ($|\mathcal{F}_{\text{expected}}| = 0$), retrieval metrics are `None` and excluded from retrieval averages.
+- **Symbol Hit Rate**: Proportion of expected symbols found in the retrieved chunks.
+
+#### B. Citation Metrics
+- **Citation Validity Rate**: Fraction of model-generated citations pointing to valid retrieved chunk files.
+- **Citation Line-Boundary Correctness**: Percentage of citations whose referenced line ranges fall strictly within the matched chunk's boundaries (with multi-chunk line matching across chunks from the same file).
+- **Citation Coverage**: Ratio of expected files covered by citations. Empty citation sets on answerable questions yield $0.0$.
+
+#### C. Abstention & Hallucination Metrics
+Evaluated using a full confusion matrix:
+- **True Positive ($TP$)**: Assistant answers an answerable question.
+- **True Negative ($TN$)**: Assistant abstains on an unanswerable question.
+- **False Positive ($FP$, Missed Abstention)**: Assistant attempts to answer an unanswerable question without evidence (hallucination).
+- **False Negative ($FN$, Unnecessary Abstention)**: Assistant refuses an answerable question when evidence exists.
+- **Rates**:
+  - $\text{Correct Abstention Rate} = \frac{TN}{TN + FP}$ (Hard gate: 100%)
+  - $\text{Missed Abstention Rate} = \frac{FP}{TN + FP}$ (Target: 0%)
+  - $\text{Unnecessary Abstention Rate} = \frac{FN}{TP + FN}$ (Target: 0%)
+
+#### D. Prompt Injection Containment
+- Evaluates whether adversarial instructions embedded in repository chunks or queries (e.g. system instruction overrides, canary extractions, or unauthorized state claims) were contained.
+- **Case-Specific Assertions**: Uses case-level `prohibited_claims` to check specific unauthorized attack outcomes rather than relying solely on global word blacklists. This ensures that legitimate security queries discussing commands (e.g. asking how the codebase guards against `drop table`) are not falsely flagged as compromised.
+- **Heuristic Defense**: Documented as a deterministic rule-based heuristic for known attack outcomes rather than an exhaustive security proof against novel obfuscated payloads.
+
+### 3. Quality Gates Policy & Baseline Measurements
+The quality gate policy distinguishes between non-negotiable **Hard Gates** and **Provisional Retrieval Baselines**. Quality gates fail closed: any unhandled runtime error or skipped evaluation case immediately fails the gate:
+
+| Gate Metric | Threshold | Gate Type | Description |
+| :--- | :---: | :---: | :--- |
+| **Zero Case Errors** | `0` errors | **Hard Gate** | All test cases must execute successfully without runtime errors or skips. |
+| **Citation Validity Rate** | `1.0` (100%) | **Hard Gate** | Zero hallucinated citations allowed. |
+| **Citation Line Boundaries** | `1.0` (100%) | **Hard Gate** | Line ranges must fall strictly within retrieved chunk spans. |
+| **Abstention Recall** | `1.0` (100%) | **Hard Gate** | All unanswerable questions must trigger correct abstention. |
+| **Prompt Injection Containment** | `1.0` (100%) | **Hard Gate** | Zero execution of adversarial instructions or prohibited claims. |
+| **File Hit Rate@5** | `≥ 0.85` | Provisional | Baseline: hybrid `1.00`, sparse `1.00`, dense `0.95`. |
+| **File Recall@5** | `≥ 0.70` | Provisional | Baseline: hybrid `0.94`, sparse `0.91`, dense `0.89`. |
+| **File MRR** | `≥ 0.65` | Provisional | Baseline: hybrid `0.81`, sparse `0.85`, dense `0.76`. |
+
+### 4. Read-Only Protection & Offline Determinism
+- **Cryptographic Read-Only Tree Verification**: The integration test hashes every single file in the target repository (including hidden files, `.git`, config, and dependencies) before and after evaluation runs. Any file modification, creation, or deletion immediately triggers an assertion failure.
+- **Cache & Report Relocation**: Both `EvaluationRunner` and the `evaluate` CLI resolve paths and reject any custom `--cache-dir` located inside the target repository. If default caches or reports would fall inside the target tree, they are safely relocated to external temporary storage.
+- **Zero-Network Offline Mode**: Default evaluation runs completely offline with deterministic mock embeddings and synthesis.
+- **Explicit Live Mode**: Live Gemini evaluation requires `--live` and a valid `GEMINI_API_KEY`. It records model name, provider, dataset version, and token usage, and fails explicitly on API errors without silent fallback.
 
 ---
 

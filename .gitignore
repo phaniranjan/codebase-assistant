@@ -28,6 +28,9 @@ test_execution*.log
 .codebase_assistant/
 data/indexes/
 data/cache/
+reports/
+eval_report*.json
+eval_report*.md
 
 # Secrets and environment files
 .env
