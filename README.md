@@ -6,7 +6,7 @@
 
 ## 🏗️ Architecture Blueprint & Implementation Status
 
-The diagram below illustrates the full target architecture across all phases. Components implemented in **Milestone 1** are marked with `[Implemented]`; downstream capabilities are marked with `[Planned Phase N]`.
+The diagram below illustrates the full target architecture across all phases. Implemented components are marked with `[Implemented]`; downstream capabilities are marked with `[Planned Phase N]`.
 
 ```mermaid
 flowchart TD
@@ -18,21 +18,27 @@ flowchart TD
         Chunker --> Indexer["Incremental Indexer [Implemented]\n(SHA-256 change detection, Stale eviction, Manifest)"]
         Indexer --> LocalIndex[("Local Knowledge Base [Implemented]\n(.codebase_assistant/ manifest.json + chunks.json)")]
         
-        Chunker -.->|Future Hook| EmbedModel["Embedding Provider [Planned Phase 3]\n(Gemini Embeddings + Local Vector Index)"]
+        Chunker -.->|Future Hook| EmbedModel["Embedding Provider [Implemented]\n(Gemini Embeddings + Local Vector Index)"]
         EmbedModel -.-> LocalIndex
     end
 
     %% FLOW 2: Runtime Flow
-    subgraph Flow2["2. Runtime Execution Flow [Planned Phases 4-6]"]
-        DevRequest(["Developer Request\n(Question, Code Request, Debug Trace)"]) --> AgentCore["AgentCore [Planned Phase 4]\n(Workflow Coordinator)"]
+    subgraph Flow2["2. Runtime Execution Flow"]
+        DevRequest(["Developer Request\n(Question, Code Request, Debug Trace)"]) --> AgentCore["AgentCore [Planned Phase 6]\n(Workflow Coordinator)"]
         
-        AgentCore -.-> Retriever["Hybrid Retriever [Planned Phase 3]\n(FAISS Dense Vector + BM25/Symbol Search)"]
+        AgentCore -.-> Retriever["Hybrid Retriever [Implemented]\n(Cosine Vector + BM25/Symbol Search)"]
         LocalIndex -.->|Read Index| Retriever
         
-        Retriever -.-> ContextAssembler["Context Assembler [Planned Phase 3]\n(Neighbor expansion, Token budget)"]
-        ContextAssembler -.-> PromptBuilder["Prompt Builder [Planned Phase 4]\n(Strict grounding, Prompt injection defense)"]
-        PromptBuilder -.-> GeminiClient["Gemini Client [Planned Phase 4]\n(google-genai SDK)"]
+        Retriever -.-> ContextAssembler["Context Assembler [Implemented]\n(Token budget limiter)"]
+        ContextAssembler -.-> PromptBuilder["Prompt Builder [Implemented]\n(Strict grounding, Prompt injection defense)"]
+        PromptBuilder -.-> GeminiClient["Gemini Client [Implemented]\n(google-genai SDK / Mock)"]
         GeminiClient -.-> AgentCore
+        
+        %% Proposal Generators
+        AgentCore -.-> CodeGen["CodeProposalGenerator [Implemented]\n(Context-aware unified diffs & AST verification)"]
+        AgentCore -.-> TestGen["TestProposalGenerator [Implemented]\n(Framework detection & targeted test suites)"]
+        CodeGen -.-> DevResponse(["Developer Output [Implemented]\n(Grounded Answer / Unified Diff Proposal)"])
+        TestGen -.-> DevResponse
         
         %% Tool Execution Loop
         AgentCore -.->|Requires Tool| ToolManager["Tool Manager [Planned Phase 6]\n(Tool Dispatcher)"]
@@ -44,8 +50,6 @@ flowchart TD
         UserApproval -.->|Approved| ToolExec
         UserApproval -.->|Denied| AgentCore
         ToolExec -.-> AgentCore
-        
-        AgentCore -.-> DevResponse(["Developer Output [Planned Phase 4/5]\n(Grounded Answer / Proposed Diff)"])
     end
 
     %% FLOW 3: Offline Evaluation Flow
@@ -71,12 +75,12 @@ flowchart TD
 | **Logical Chunker** | ✅ Implemented | Enclosing symbol scope preservation, line numbers, deterministic IDs, oversized chunk sub-splitting. |
 | **Incremental Indexer** | ✅ Implemented | SHA-256 change detection, stale chunk eviction for modified/deleted/renamed files, repo identity checks. |
 | **Local Cache Storage** | ✅ Implemented | Local `.codebase_assistant/` manifest, chunks, and vector store. |
-| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`, `ask`, `evaluate`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, hybrid search, repository Q&A, and RAG evaluation. |
+| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`, `ask`, `evaluate`, `propose-code`, `propose-tests`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, hybrid search, repository Q&A, RAG evaluation, and code/test proposals. |
 | **Embeddings & Vector Store** | ✅ Implemented | Pluggable providers (Gemini & deterministic mock), local cosine vector store. |
 | **BM25 & Hybrid Retriever** | ✅ Implemented | CodeTokenizer, Okapi BM25 keyword search, Reciprocal Rank Fusion (RRF), context assembler. |
 | **Gemini Integration & Grounded Q&A** | ✅ Implemented | Grounded prompt building, prompt injection barrier, citation validation, GeminiClient & QA engine. |
 | **RAG Evaluation Framework & Quality Gates** | ✅ Implemented | Golden dataset (25 cases), chunk/file metrics, citation boundary checks, abstention matrix, injection containment, quality gates, and reports. |
-| **Code & Test Proposals** | ⏳ Planned (Phase 5) | Unified git diff generation and pytest test generation. |
+| **Code & Test Proposals** | ✅ Implemented | Context-aware unified diff generation, AST syntax verification, targeted test suite generation, and CLI commands (`propose-code`, `propose-tests`). |
 | **Controlled Tools & Execution Sandbox** | ⏳ Planned (Phase 6) | Policy engine, permissions, and isolated command execution. |
 
 ---
@@ -107,7 +111,7 @@ Key configuration settings:
 - `CODEBASE_CACHE_DIR`: Directory where index manifests and chunks are stored (default: `.codebase_assistant`).
 - `MAX_TOOL_CALLS_PER_TURN`: Maximum tool iterations to prevent infinite loops (default: 5).
 - `COMMAND_TIMEOUT_SECONDS`: Strict timeout for command execution (default: 30s).
-- `GEMINI_API_KEY`: API key for Gemini LLM generation and embeddings (required in Phase 3+).
+- `GEMINI_API_KEY`: API key for Gemini LLM generation and embeddings (required for live Gemini operations).
 
 ---
 
@@ -215,6 +219,55 @@ python -m codebase_assistant.cli evaluate /path/to/repository --fail-under
 python -m codebase_assistant.cli evaluate /path/to/repository --live
 ```
 
+### 8. Code & Test Proposal Generation
+Generate context-aware unified diff modifications and targeted unit tests without modifying target files:
+```bash
+# Propose a code modification with architectural reasoning and AST verification
+python -m codebase_assistant.cli propose-code "Add exponential backoff retry to query execution" /path/to/repository --file src/pipeline.py
+
+# Save proposed unified diff patch to an external patch file
+python -m codebase_assistant.cli propose-code "Add query latency instrumentation" /path/to/repository --file src/pipeline.py --output-patch /path/to/external/query_latency.patch
+
+# Offline code proposal using mock provider
+python -m codebase_assistant.cli propose-code "Refactor authentication helper" /path/to/repository --provider mock
+
+# Propose targeted unit tests for a source file (auto-detects pytest vs unittest)
+python -m codebase_assistant.cli propose-tests src/pipeline.py /path/to/repository
+
+# Override testing framework convention and save patch
+python -m codebase_assistant.cli propose-tests src/pipeline.py /path/to/repository --framework pytest --output-patch /path/to/external/test_pipeline.patch
+```
+
+---
+
+## 🧩 Code & Test Proposal Generation (Phase 5)
+
+Phase 5 introduces context-aware code modification and automated unit test generation designed strictly around the read-only and deterministic verification principles defined in [`AGENTS.md`](file:///wsl.localhost/Ubuntu-26.04/home/phaniranjan/AI/codebase_assistant/AGENTS.md).
+
+### 1. Architectural Principles
+1. **Target Repositories are Read-Only Knowledge Sources**: The assistant never applies modifications directly to the repository without explicit interactive approval. Proposed changes are always emitted as standard unified diffs (`git diff` format) accompanied by architectural reasoning.
+2. **Deterministic Verification Before LLM Assertion**: Generated Python code and test suites are pre-flight parsed with Python's native `ast.parse()` (`DiffEngine.validate_ast_syntax`). If a syntax error is present, line and column numbers are surfaced and the proposal is marked invalid before being presented.
+3. **In-Memory Diff Engine & Patch Dry-Run**: `DiffEngine.generate_unified_diff` produces standard unified diffs, while `DiffEngine.apply_diff_in_memory` verifies hunk applications purely in memory, ensuring that diffs apply cleanly without ever writing to disk.
+4. **Boundary Containment & Path Traversal Defense**: All target file candidates and output patch locations are validated by `DiffEngine.validate_target_path`, preventing relative navigation (`..`) or absolute references that resolve outside the repository boundary.
+
+### 2. Code Modification Proposals (`CodeProposalGenerator`)
+- Retrieves relevant codebase chunks using hybrid search over the developer task and target file.
+- Constructs grounded prompts enforcing strict system instructions, prompt injection barriers, and architectural structure.
+- Parses LLM output into architectural reasoning and code sections.
+- Computes unified diff against the original file (or `/dev/null` for newly created files).
+- Validates in-memory patch application and executes AST syntax validation.
+
+### 3. Automated Unit Test Generation (`TestProposalGenerator`)
+- Inspects target source files and extracts AST symbol metadata (class names, function names, method signatures).
+- Auto-detects test framework conventions (`pytest` vs `unittest`) by scanning existing repository tests.
+- Determines conventional test file locations (e.g. `src/foo.py` -> `tests/test_foo.py` or `tests/unit/test_foo.py`).
+- Synthesizes comprehensive test suites covering nominal happy paths, boundary edge cases, and exception handling.
+- Validates test syntax with AST parsing and formats the proposed test suite as a unified diff.
+
+### 4. Read-Only Protection for Proposals
+- **CLI Invariant Guard**: The `propose-code` and `propose-tests` commands inspect `--output-patch` paths and outright reject any path that points inside the target repository.
+- **Cryptographic Integration Verification**: Integration tests against `ai-evaluation` compute SHA-256 digests across all repository files before and after proposal generation, verifying zero file modifications.
+
 ---
 
 ## 📊 Evaluation Framework & Quality Gates
@@ -299,7 +352,7 @@ The quality gate policy distinguishes between non-negotiable **Hard Gates** and 
 | **File MRR** | `≥ 0.65` | Provisional | Baseline: hybrid `0.81`, sparse `0.85`, dense `0.76`. |
 
 ### 4. Read-Only Protection & Offline Determinism
-- **Cryptographic Read-Only Tree Verification**: The integration test hashes every single file in the target repository (including hidden files, `.git`, config, and dependencies) before and after evaluation runs. Any file modification, creation, or deletion immediately triggers an assertion failure.
+- **Cryptographic Read-Only Tree Verification**: The integration test hashes every single file in the target repository (including hidden files, configs, and dependencies) before and after evaluation runs. Any file modification, creation, or deletion immediately triggers an assertion failure.
 - **Cache & Report Relocation**: Both `EvaluationRunner` and the `evaluate` CLI resolve paths and reject any custom `--cache-dir` located inside the target repository. If default caches or reports would fall inside the target tree, they are safely relocated to external temporary storage.
 - **Zero-Network Offline Mode**: Default evaluation runs completely offline with deterministic mock embeddings and synthesis.
 - **Explicit Live Mode**: Live Gemini evaluation requires `--live` and a valid `GEMINI_API_KEY`. It records model name, provider, dataset version, and token usage, and fails explicitly on API errors without silent fallback.
@@ -313,6 +366,8 @@ The quality gate policy distinguishes between non-negotiable **Hard Gates** and 
 2. **Symlink Containment**: Symlinks pointing outside the repository boundary are blocked (`[SYMLINK_OUTSIDE]`) to prevent path traversal attacks.
 3. **Repository Identity Validation**: The indexer binds cache manifests to the repository's identity and path, preventing cross-repository index corruption.
 4. **Stale Eviction Integrity**: Modified, deleted, renamed, or unparseable files have their old chunks evicted immediately, preventing stale chunks from appearing current.
+5. **Deterministic AST Pre-Flight Verification**: Every code modification or test suite proposal must be successfully parsed by `ast.parse()` before being accepted or displayed.
+6. **In-Memory Diff Application**: Patches are applied and dry-run in memory (`DiffEngine.apply_diff_in_memory`) without touching or altering disk contents.
 
 ### Limits of Secret Detection
 The repository scanner incorporates multi-layered secret filtering:
