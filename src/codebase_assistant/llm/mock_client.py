@@ -1,5 +1,6 @@
 """Deterministic mock Gemini client for fast offline testing and verification."""
 
+import json
 import math
 from pathlib import Path
 import re
@@ -60,6 +61,28 @@ class MockGeminiClient(BaseLLMClient):
         if self.canned_response is not None:
             return self.canned_response
 
+        # Handle Planning JSON requests
+        if "Return a strict JSON object with these keys:" in prompt and "target_files" in prompt:
+            task_match = re.search(r"Task:\s*(.+)", prompt)
+            task_str = task_match.group(1).strip() if task_match else "repair task"
+            file_match = re.search(r"['\"]?([\w/\.\\]+\.py)['\"]?", task_str)
+            f_path = file_match.group(1) if file_match else "src/main.py"
+            stem = Path(f_path).stem.replace("test_", "")
+            return json.dumps({
+                "analysis": f"Execute repair workflow for: {task_str}",
+                "target_files": [f_path],
+                "test_files": [f"tests/unit/test_{stem}.py"],
+                "steps": [
+                    f"Inspect and retrieve context for '{f_path}'",
+                    "Propose minimal verified patch proposal",
+                    "Run sandboxed test suite",
+                ],
+                "success_criteria": [
+                    "All tests pass cleanly without errors",
+                    "AST syntax verification succeeds",
+                ],
+            })
+
         # 1. Handle Agent Orchestration Loop (ReAct)
         if "AVAILABLE TOOLS:" in prompt and "[DEVELOPER TASK]" in prompt:
             task_match = re.search(r"\[DEVELOPER TASK\]\s*(.+?)\s*\[END DEVELOPER TASK\]", prompt, re.DOTALL)
@@ -98,15 +121,42 @@ class MockGeminiClient(BaseLLMClient):
             file_match = re.search(r"Target file to modify or create: '([^']+)'", prompt)
             target_file = file_match.group(1) if file_match else "src/proposal.py"
 
-            # Check context block for existing code
-            ctx_match = re.search(r"\[CONTEXT_START\](.*?)\[CONTEXT_END\]", prompt, re.DOTALL)
-            ctx_text = ctx_match.group(1) if ctx_match else ""
-            code_blocks = re.findall(r"```python\s*(.+?)```", ctx_text, re.DOTALL)
-            ctx_code = code_blocks[0].strip() if code_blocks else ""
+            # Check for current target file content first
+            target_content_match = re.search(r"\[CURRENT TARGET FILE CONTENT:[^\]]+\]\s*```python\s*(.+?)```", prompt, re.DOTALL)
+            if target_content_match:
+                ctx_code = target_content_match.group(1).strip()
+            else:
+                # Check context block for existing code
+                ctx_match = re.search(r"\[CONTEXT_START\](.*?)\[CONTEXT_END\]", prompt, re.DOTALL)
+                ctx_text = ctx_match.group(1) if ctx_match else ""
+                code_blocks = re.findall(r"```python\s*(.+?)```", ctx_text, re.DOTALL)
+                if code_blocks:
+                    ctx_code = code_blocks[0].strip()
+                elif ctx_text:
+                    clean_lines = [
+                        l for l in ctx_text.splitlines()
+                        if not l.startswith("###") and not l.startswith("[CHUNK") and not l.startswith("[Citation") and not l.startswith("Score:")
+                    ]
+                    ctx_code = "\n".join(clean_lines).strip()
+                else:
+                    ctx_code = ""
 
             task_clean = task_str.split("\n")[0].strip()
 
-            if ctx_code:
+            if "Previous repair attempt" in task_str or "Test Failure Diagnostics" in prompt:
+                if "def div(" in ctx_code:
+                    proposed_code = ctx_code.replace(
+                        "return a / b",
+                        "if b == 0:\n        raise ValueError('Cannot divide by zero')\n    return a / b",
+                    )
+                else:
+                    proposed_code = (
+                        f"{ctx_code}\n\n"
+                        "# Verified self-repair fix\n"
+                        "def repaired_fix():\n"
+                        "    return True\n"
+                    )
+            elif ctx_code:
                 proposed_code = (
                     f"{ctx_code}\n\n"
                     "def proposed_enhancement():\n"
@@ -123,7 +173,7 @@ class MockGeminiClient(BaseLLMClient):
 
             return (
                 "--- ARCHITECTURAL REASONING ---\n"
-                f"The proposed modification implements '{task_str}' in '{target_file}' with structured error handling and AST-valid syntax.\n\n"
+                f"The proposed modification implements '{task_clean}' in '{target_file}' with structured error handling and AST-valid syntax.\n\n"
                 f"--- FILE: {target_file} ---\n"
                 "```python\n"
                 f"{proposed_code}\n"

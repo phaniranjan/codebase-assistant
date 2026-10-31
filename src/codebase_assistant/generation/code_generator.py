@@ -32,9 +32,23 @@ class CodeProposalGenerator:
         self.llm_client = llm_client or GeminiClient()
         self.assembler = assembler or ContextAssembler(default_max_tokens=get_settings().max_context_tokens)
 
-    def _build_proposal_prompt(self, task: str, context_block: str, target_file: Optional[str] = None) -> str:
+    def _build_proposal_prompt(
+        self,
+        task: str,
+        context_block: str,
+        target_file: Optional[str] = None,
+        original_content: str = "",
+    ) -> str:
         """Construct a grounded prompt with strict instructions and prompt-injection barriers."""
         target_clause = f"Target file to modify or create: '{target_file}'." if target_file else "Select the most appropriate file to modify or create based on the codebase context."
+
+        target_file_block = ""
+        if target_file and original_content:
+            target_file_block = (
+                f"\n[CURRENT TARGET FILE CONTENT: '{target_file}']\n"
+                f"```python\n{original_content.strip()}\n```\n"
+                f"[END CURRENT TARGET FILE CONTENT]\n"
+            )
 
         prompt = f"""[SYSTEM INSTRUCTIONS]
 You are an expert AI software architect working on an existing codebase.
@@ -63,7 +77,7 @@ You MUST structure your response into these sections:
 {task}
 {target_clause}
 [END DEVELOPER TASK]
-
+{target_file_block}
 [CONTEXT_START]
 {context_block}
 [CONTEXT_END]
@@ -122,6 +136,7 @@ Propose the changes now:"""
             task=task,
             context_block=assembled.formatted_text,
             target_file=resolved_target,
+            original_content=original_content,
         )
 
         response = self.llm_client.generate(prompt=prompt, temperature=0.0)

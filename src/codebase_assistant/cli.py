@@ -28,8 +28,12 @@ except ImportError:
 from codebase_assistant.agent import (
     AgentConfig,
     AgentCoordinator,
+    DiagnosticEngine,
     PermissionEngine,
     PolicyEngine,
+    RepairWorkflowCoordinator,
+    RepairWorkflowReport,
+    RepairWorkflowStatus,
     ToolRegistry,
 )
 from codebase_assistant.config import get_settings
@@ -1262,6 +1266,178 @@ def agent(
 
     print("\n--- Final Answer ---")
     print(response.final_answer)
+
+
+@main.command()
+@click.argument("task", required=False)
+@click.option("--task", "-t", "task_opt", help="Task description or bug report to repair.")
+@click.option("--repo", "-r", "repo_path_opt", help="Target repository directory.")
+@click.option("--target-file", "-f", help="Target source file to modify.")
+@click.option("--test-command", "-c", help="Test command to run for verification (e.g. 'pytest tests/test_calc.py').")
+@click.option("--max-retries", "-m", default=3, type=int, help="Maximum bounded repair attempts (default: 3).")
+@click.option("--provider", "-p", "provider_type", default="gemini", type=click.Choice(["gemini", "mock"], case_sensitive=False), help="LLM and embedding provider.")
+@click.option("--allow-fallback/--no-fallback", default=True, help="Fall back to mock if Gemini API fails.")
+@click.option("--auto-approve", is_flag=True, default=False, help="Auto-approve consequential actions (applying patch, running tests).")
+@click.option("--timeout", default=30.0, type=float, help="Command execution timeout in seconds (default: 30.0s).")
+@click.option("--cache-dir", default=None, help="Custom cache directory.")
+@click.option("--report-file", type=click.Path(dir_okay=False), help="Path to write the markdown repair report.")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Output machine-readable JSON report.")
+def repair(
+    task: str | None,
+    task_opt: str | None,
+    repo_path_opt: str | None,
+    target_file: str | None,
+    test_command: str | None,
+    max_retries: int,
+    provider_type: str,
+    allow_fallback: bool,
+    auto_approve: bool,
+    timeout: float,
+    cache_dir: str | None,
+    report_file: str | None,
+    json_output: bool,
+):
+    """Execute an agentic repair workflow: plan, retrieve, propose, apply, test, diagnose, and self-repair."""
+    task_str = task_opt or task
+    if not task_str:
+        print("Error: Task description is required. Provide it as an argument or with --task.", file=sys.stderr)
+        sys.exit(1)
+
+    target_repo = Path(repo_path_opt or ".").resolve()
+    if not json_output:
+        print_info("Target Repository", str(target_repo))
+        print_info("Repair Task", task_str)
+        print_info("Max Retries", str(max_retries))
+        print_info("Consequential Mode", "Auto-Approve" if auto_approve else "Interactive Approval")
+
+    cache = _resolve_proposal_cache(target_repo, cache_dir)
+
+    indexer = IncrementalIndexer(target_repo, cache_dir=cache)
+    chunks = indexer.load_chunks()
+    if not chunks:
+        indexer.index()
+        chunks = indexer.load_chunks()
+
+    if not chunks:
+        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.", file=sys.stderr)
+        sys.exit(1)
+
+    if provider_type.lower() == "mock":
+        emb_provider = MockEmbeddingProvider()
+        llm_client = MockGeminiClient()
+    else:
+        try:
+            emb_provider = GeminiEmbeddingProvider()
+            llm_client = GeminiClient()
+            emb_provider._get_client()
+            llm_client._get_client()
+        except Exception as e:
+            if allow_fallback:
+                if not json_output:
+                    print(f"[Warning] {e}")
+                    print("Falling back to Mock providers for offline execution.")
+                emb_provider = MockEmbeddingProvider()
+                llm_client = MockGeminiClient()
+            else:
+                print(f"\n[Error] {e}", file=sys.stderr)
+                print("Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                sys.exit(1)
+
+    manager = EmbeddingManager(target_repo, cache_dir=cache, provider=emb_provider)
+    vector_store = manager.load_vector_store()
+    if vector_store.count() == 0:
+        if not json_output:
+            print("Notice: Vector store is empty. Generating embeddings first...")
+        manager.sync()
+        vector_store = manager.load_vector_store()
+
+    try:
+        retriever = HybridRetriever(
+            chunks=chunks,
+            vector_store=vector_store,
+            embedding_provider=emb_provider,
+        )
+    except ValueError as e:
+        print(f"Error initializing retriever: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    code_gen = CodeProposalGenerator(
+        repository_path=target_repo,
+        retriever=retriever,
+        llm_client=llm_client,
+    )
+    test_gen = TestProposalGenerator(
+        repository_path=target_repo,
+        retriever=retriever,
+        llm_client=llm_client,
+    )
+
+    policy_engine = PolicyEngine(target_repo)
+    perm_engine = PermissionEngine(auto_approve_consequential=auto_approve)
+
+    tool_registry = ToolRegistry(
+        repository_path=target_repo,
+        retriever=retriever,
+        code_generator=code_gen,
+        test_generator=test_gen,
+        policy_engine=policy_engine,
+        permission_engine=perm_engine,
+        command_timeout_seconds=timeout,
+    )
+
+    coordinator = RepairWorkflowCoordinator(
+        repository_path=target_repo,
+        retriever=retriever,
+        code_generator=code_gen,
+        test_generator=test_gen,
+        gemini_client=llm_client,
+        policy_engine=policy_engine,
+        permission_engine=perm_engine,
+        tool_registry=tool_registry,
+        max_retries=max_retries,
+        command_timeout_seconds=timeout,
+    )
+
+    if not json_output:
+        print("\n--- Initiating Agentic Repair Workflow ---")
+
+    report = coordinator.run(
+        task=task_str,
+        target_file=target_file,
+        test_command=test_command,
+    )
+
+    if json_output:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print("\n" + "=" * 60)
+        status_label = report.status.value.upper()
+        if report.status == RepairWorkflowStatus.SUCCESS:
+            print_success("Repair Outcome:", f"SUCCESS ({report.total_attempts} attempt(s))")
+        else:
+            print_warning("Repair Outcome:", f"{status_label} ({report.total_attempts} attempt(s))")
+
+        print_info("Workflow ID:", report.workflow_id)
+        print_info("Duration:", f"{report.total_duration_seconds:.2f}s")
+        print("\n--- Summary ---")
+        print(report.summary)
+
+        if report.final_diff:
+            print("\n--- Final Verified Patch ---")
+            print(report.final_diff)
+
+    if report_file:
+        try:
+            report_path = Path(report_file).resolve()
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(report.to_markdown(), encoding="utf-8")
+            if not json_output:
+                print_success("\nReport Saved:", str(report_path))
+        except Exception as e:
+            print(f"Warning: Failed to save report to '{report_file}': {e}", file=sys.stderr)
+
+    if report.status != RepairWorkflowStatus.SUCCESS:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
