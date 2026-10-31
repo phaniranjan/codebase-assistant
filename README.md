@@ -75,13 +75,14 @@ flowchart TD
 | **Logical Chunker** | ✅ Implemented | Enclosing symbol scope preservation, line numbers, deterministic IDs, oversized chunk sub-splitting. |
 | **Incremental Indexer** | ✅ Implemented | SHA-256 change detection, stale chunk eviction for modified/deleted/renamed files, repo identity checks. |
 | **Local Cache Storage** | ✅ Implemented | Local `.codebase_assistant/` manifest, chunks, and vector store. |
-| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`, `ask`, `evaluate`, `propose-code`, `propose-tests`, `agent`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, hybrid search, repository Q&A, RAG evaluation, code/test proposals, and autonomous agent orchestration. |
+| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`, `ask`, `evaluate`, `propose-code`, `propose-tests`, `agent`, `repair`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, hybrid search, repository Q&A, RAG evaluation, code/test proposals, autonomous agent orchestration, and end-to-end repair workflows. |
 | **Embeddings & Vector Store** | ✅ Implemented | Pluggable providers (Gemini & deterministic mock), local cosine vector store. |
 | **BM25 & Hybrid Retriever** | ✅ Implemented | CodeTokenizer, Okapi BM25 keyword search, Reciprocal Rank Fusion (RRF), context assembler. |
 | **Gemini Integration & Grounded Q&A** | ✅ Implemented | Grounded prompt building, prompt injection barrier, citation validation, GeminiClient & QA engine. |
 | **RAG Evaluation Framework & Quality Gates** | ✅ Implemented | Golden dataset (25 cases), chunk/file metrics, citation boundary checks, abstention matrix, injection containment, quality gates, and reports. |
 | **Code & Test Proposals** | ✅ Implemented | Context-aware unified diff generation, AST syntax verification, targeted test suite generation, and CLI commands (`propose-code`, `propose-tests`). |
 | **Controlled Tools & Execution Sandbox** | ✅ Implemented | ReAct coordinator, PolicyEngine, PermissionEngine, and isolated command execution. |
+| **Agentic Repair Workflows** | ✅ Implemented | End-to-end task execution: planning, context retrieval, proposal, atomic patch application, sandboxed testing, test failure diagnosis, bounded self-repair, and audit reports (`repair`). |
 
 ---
 
@@ -407,7 +408,31 @@ The quality gate policy distinguishes between non-negotiable **Hard Gates** and 
 
 ---
 
-## 🔒 Security, Privacy & Limits of Secret Detection
+## 🔄 Agentic Repair Workflows (Phase 7)
+
+`codebase-assistant` orchestrates end-to-end development tasks through an autonomous, bounded repair workflow:
+1. **Task Planning**: Analyzes requirements, detects target source files, identifies candidate test suites, and breaks work down into step-by-step criteria.
+2. **Context Retrieval**: Queries the hybrid knowledge base to assemble grounded context and symbol references.
+3. **Proposal & Pre-Flight Syntax Check**: Constructs minimal unified diffs and deterministically parses them with Python's AST parser.
+4. **Atomic In-Memory Application**: Dry-runs patches in memory before touching disk, guaranteeing that any hunk failure or syntax error results in zero disk modifications.
+5. **Sandboxed Test Verification**: Executes test suites inside disposable temporary workspace copies with loopback proxy blocking (`127.0.0.1:0`), ensuring tests cannot leak side-effects or touch the original repository.
+6. **Diagnostic Engine & Self-Repair Feedback**: If tests fail, parses stack traces, extracts assertion failures, formulates an actionable diagnosis, and feeds diagnostic feedback into bounded repair attempts (default: 3).
+7. **Clean Rollback & Audit Reporting**: If repair attempts exceed retry limits, rolls back all workspace changes cleanly and produces comprehensive Markdown and JSON audit reports.
+
+### CLI Usage
+
+```bash
+# Execute end-to-end repair with verification
+codebase-assistant repair --task "Fix division by zero in src/calc.py" --test-command "pytest tests/test_calc.py" --auto-approve
+
+# Output machine-readable JSON report
+codebase-assistant repair --task "Add input validation" --repo /path/to/repo --max-retries 3 --json
+
+# Export Markdown audit report to file
+codebase-assistant repair --task "Refactor cache eviction" --report-file reports/repair_audit.md
+```
+
+---
 
 ### Security Guardrails
 1. **Read-Only Target Repository**: The assistant treats target codebases as strictly read-only knowledge sources.
