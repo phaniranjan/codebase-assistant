@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -482,7 +483,15 @@ class ToolRegistry:
             raise PermissionError(f"User denied authorization for test execution: '{command}'.")
 
         # Network isolation: active loopback proxies block outbound connections
-        clean_env = os.environ.copy()
+        # Clean environment: strip credentials and sensitive API keys
+        clean_env = {}
+        sensitive_patterns = re.compile(
+            r"(?i)(api[_-]?key|secret|token|password|cred|auth|gemini|groq|openai|anthropic|aws|github|gh_)"
+        )
+        for k, v in os.environ.items():
+            if not sensitive_patterns.search(k):
+                clean_env[k] = v
+
         clean_env["HTTP_PROXY"] = "http://127.0.0.1:0"
         clean_env["HTTPS_PROXY"] = "http://127.0.0.1:0"
         clean_env["ALL_PROXY"] = "socks5://127.0.0.1:0"
@@ -584,44 +593,7 @@ class ToolRegistry:
     @staticmethod
     def _split_unified_diff(unified_diff: str) -> List[Tuple[str, str]]:
         """Split a potentially multi-file unified diff into individual (target_path, file_diff) pairs."""
-        lines = unified_diff.splitlines(keepends=True)
-        chunks: List[List[str]] = []
-        current_chunk: List[str] = []
-
-        for line in lines:
-            # Detect boundary between files:
-            # Either 'diff --git ' or a '--- ' header when current_chunk already contains '+++ '
-            if line.startswith("diff --git ") or (
-                line.startswith("--- ") and any(l.startswith("+++ ") for l in current_chunk)
-            ):
-                if current_chunk:
-                    chunks.append(current_chunk)
-                    current_chunk = []
-            current_chunk.append(line)
-
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        results: List[Tuple[str, str]] = []
-        for chunk in chunks:
-            target_path: Optional[str] = None
-            for line in chunk:
-                if line.startswith("+++ "):
-                    raw = line[4:].strip()
-                    clean = raw[2:] if raw.startswith("b/") else raw
-                    if clean and clean != "/dev/null":
-                        target_path = clean
-                        break
-                elif line.startswith("--- ") and target_path is None:
-                    raw = line[4:].strip()
-                    clean = raw[2:] if raw.startswith("a/") else raw
-                    if clean and clean != "/dev/null":
-                        target_path = clean
-
-            if target_path:
-                results.append((target_path, "".join(chunk)))
-
-        return results
+        return DiffEngine.split_unified_diff(unified_diff)
 
     def _handle_apply_patch(self, args: Dict[str, Any]) -> str:
         unified_diff = args.get("unified_diff", "")
@@ -645,13 +617,14 @@ class ToolRegistry:
             raise ValueError("No valid file diffs found in patch payload.")
 
         # Phase 1: In-memory dry run and AST verification for all files (no disk writes)
-        prepared_updates: List[Tuple[str, Path, str, str, bool]] = []
+        prepared_updates: List[Tuple[str, Path, str, str, bool, Optional[int]]] = []
         for rel_file, file_diff in file_diffs:
             abs_target = self.policy_engine.validate_file_access(rel_file)
             existed = abs_target.is_file()
             orig_content = (
                 abs_target.read_text(encoding="utf-8", errors="replace") if existed else ""
             )
+            orig_mode: Optional[int] = abs_target.stat().st_mode if existed else None
 
             # Dry-run patch in memory
             try:
@@ -669,29 +642,53 @@ class ToolRegistry:
                         f"Patched code for '{rel_file}' failed AST validation: {'; '.join(errors)}"
                     )
 
-            prepared_updates.append((rel_file, abs_target, orig_content, patched_content, existed))
+            prepared_updates.append(
+                (rel_file, abs_target, orig_content, patched_content, existed, orig_mode)
+            )
 
         # Phase 2: Atomic disk application with rollback guarantee on write failure
-        written_stack: List[Tuple[Path, str, bool]] = []
+        written_stack: List[Tuple[Path, str, bool, Optional[int]]] = []
         modified_files: List[str] = []
 
         try:
-            for rel_file, abs_target, orig_content, patched_content, existed in prepared_updates:
-                written_stack.append((abs_target, orig_content, existed))
+            for (
+                rel_file,
+                abs_target,
+                orig_content,
+                patched_content,
+                existed,
+                orig_mode,
+            ) in prepared_updates:
+                written_stack.append((abs_target, orig_content, existed, orig_mode))
                 abs_target.parent.mkdir(parents=True, exist_ok=True)
                 abs_target.write_text(patched_content, encoding="utf-8")
                 modified_files.append(rel_file)
         except Exception as write_err:
-            # Rollback modified files to original contents in reverse order
-            for target, orig, existed in reversed(written_stack):
+            rollback_errors: List[str] = []
+            # Rollback modified files to original contents and metadata in reverse order
+            for target, orig, existed, orig_mode in reversed(written_stack):
                 try:
                     if existed:
                         target.write_text(orig, encoding="utf-8")
+                        if orig_mode is not None:
+                            try:
+                                target.chmod(orig_mode)
+                            except Exception:
+                                pass
                     else:
                         if target.exists():
                             target.unlink()
                 except Exception as rb_err:
-                    logger.error("Failed to rollback file '%s': %s", target, rb_err)
+                    msg = f"Failed to rollback file '{target}': {rb_err}"
+                    logger.error(msg)
+                    rollback_errors.append(msg)
+
+            if rollback_errors:
+                raise RuntimeError(
+                    f"CRITICAL: ROLLBACK_FAILED after write error ({write_err}). "
+                    f"Rollback failures: {'; '.join(rollback_errors)}"
+                ) from write_err
+
             raise RuntimeError(
                 f"Atomic patch application failed during disk write. Rolled back all changes: {write_err}"
             ) from write_err

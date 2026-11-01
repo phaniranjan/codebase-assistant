@@ -344,3 +344,121 @@ codebase-assistant evaluate ../ai-evaluation --dataset data/golden_dataset.json 
 
 ### GitHub Actions CI
 The CI workflow (`.github/workflows/ci.yml`) executes on every push and pull request across Python **3.10, 3.11, 3.12, and 3.13**, verifying formatting, typing, unit tests, adversarial security tests, and RAG quality gates on every commit.
+
+---
+
+## 🔌 Using codebase-assistant from Google Antigravity
+
+`codebase-assistant` v0.2.0 features native integration with Google Antigravity IDE using the **Model Context Protocol (MCP)**. This enables natural-language conversational pair programming directly inside Antigravity without needing to remember CLI commands, flags, or internal tool names.
+
+### 1. Integration Architecture
+
+```mermaid
+flowchart LR
+    User["Developer (Antigravity Chat)"] <--> AGY["Google Antigravity IDE"]
+    AGY <-->|"STDIO (JSON-RPC)"| MCP["codebase-assistant MCP Server"]
+    MCP --> Retrieval["HybridRetriever (FAISS + BM25)"]
+    MCP --> LLM["Grounded Gemini Q&A Engine"]
+    MCP --> Proposal["DiffEngine & Proposal Generators"]
+    MCP --> Repair["RepairWorkflowCoordinator (Disposable Sandbox)"]
+    MCP -.->|"Read-Only Access"| Repo["Target Codebase"]
+```
+
+- **Conversational Interface**: Antigravity acts as the conversational client, parsing developer intent and selecting appropriate tools.
+- **Intelligence & Execution Backend**: `codebase-assistant` runs as a local subprocess over standard input/output (STDIO), executing indexing, hybrid search, AST validation, and sandboxed test-driven repair.
+- **Clean Transport Isolation**: All JSON-RPC protocol messages flow over `stdin`/`stdout`, while application diagnostic logs route strictly to `stderr`.
+
+---
+
+### 2. Antigravity MCP Configuration (`mcp_config.json`)
+
+To register `codebase-assistant` with Antigravity, add it to your global configuration file (`~/.gemini/config/mcp_config.json`) or workspace configuration:
+
+#### Windows Configuration
+```json
+{
+  "mcpServers": {
+    "codebase-assistant": {
+      "command": "python",
+      "args": [
+        "-m",
+        "codebase_assistant.mcp_server"
+      ],
+      "env": {
+        "GEMINI_API_KEY": "${GEMINI_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+#### Linux / WSL Configuration
+```json
+{
+  "mcpServers": {
+    "codebase-assistant": {
+      "command": "/home/username/codebase_assistant_venv/bin/python",
+      "args": [
+        "-m",
+        "codebase_assistant.mcp_server"
+      ],
+      "env": {
+        "GEMINI_API_KEY": "${GEMINI_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+> [!TIP]
+> Alternatively, you can run `codebase-assistant mcp` or `codebase-assistant-mcp` as the executable command.
+
+---
+
+### 3. Antigravity Skill Installation
+
+The assistant bundles an Antigravity skill located at:
+```
+.agents/skills/codebase-assistant/SKILL.md
+```
+Antigravity automatically discovers skills placed in `.agents/skills/` within your workspace, allowing the conversational agent to understand when to invoke search, Q&A, proposal generation, or self-repair based on your prompts.
+
+---
+
+### 4. Natural-Language Conversational Examples
+
+Once connected, you can talk to the agent naturally:
+
+| User Request | What Antigravity Executes |
+| :--- | :--- |
+| *"Select the `/path/to/my-repo` repository for analysis."* | Calls `set_active_repository`, indexes files, and synchronizes embeddings. |
+| *"What components make up the authentication architecture?"* | Calls `ask_codebase` to provide a grounded response with verified file citations. |
+| *"Where is the retry backoff algorithm implemented?"* | Calls `search_codebase` using hybrid vector + BM25 ranking and presents code snippets. |
+| *"Add exponential backoff with jitter to the API client."* | Calls `propose_code`, generates an AST-validated unified diff, and presents the reasoning. |
+| *"Generate unit tests for `src/auth.py` covering token expiration."* | Calls `propose_tests` with automatic framework detection (`pytest` vs `unittest`). |
+| *"Investigate why users get a 403 when updating their profiles."* | Calls `investigate_task` to run an autonomous multi-step ReAct investigation loop. |
+| *"Run the test suite, diagnose any failures, and fix the code."* | Calls `repair_code` in an isolated disposable sandbox with network proxy isolation. |
+| *"Apply the proposed patch to my development checkout."* | Prompts for human approval checkpoint before executing `apply_approved_patch`. |
+
+---
+
+### 5. Security & Human Approval Model
+
+- **Read-Only Invariant**: Target codebases are strictly read-only knowledge sources by default.
+- **Explicit Writable Workspace**: Changes can only be written to explicitly designated writable checkouts (`writable=True` or `target_workspace`).
+- **Human Approval Checkpoint**: `apply_approved_patch` is a consequential tool requiring confirmation (`confirmation='CONFIRM_APPLY'`); model-generated approval flags cannot bypass human confirmation.
+- **Atomic Rollback**: If a write fails during multi-file patch application, modified files are restored and newly created files are unlinked. Rollback errors surface explicitly with status `ROLLBACK_FAILED`.
+- **Untrusted Diagnostic Defanging**: Repository code, logs, and stack traces are treated as untrusted data and defanged with `sanitize_untrusted_text()`.
+
+---
+
+### 6. Troubleshooting Antigravity MCP Integration
+
+- **MCP Protocol Errors / JSON Parsing Failures**:
+  - Verify that standard logging goes to `stderr`. Never use `print()` statements on `stdout` in server code or imported utilities.
+- **Tool Timeout on First Run**:
+  - Initial repository indexing can take several seconds for large repositories. In your MCP client configuration, set timeouts to `120s` or higher.
+- **Missing API Key / Offline Mode**:
+  - If `GEMINI_API_KEY` is not exported, `codebase-assistant` automatically runs in offline mock mode using deterministic local hash embeddings.
+- **Path Resolution across Windows / WSL**:
+  - Always pass absolute or workspace-relative paths. Windows UNC paths (`\\wsl.localhost\Ubuntu\...`) and Unix paths (`/home/...`) are automatically normalized.
