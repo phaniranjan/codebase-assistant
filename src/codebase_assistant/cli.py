@@ -1768,5 +1768,23 @@ def repair(
         sys.exit(1)
 
 
+@main.command()
+@click.option("--mock", is_flag=True, default=False, help="Force offline deterministic mock mode.")
+def mcp(mock: bool):
+    """Launch the Model Context Protocol (MCP) server for Antigravity integration."""
+    import logging
+
+    from codebase_assistant.mcp_server import MCPBackend, create_mcp_server
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+    backend = MCPBackend(is_live=False if mock else None)
+    server = create_mcp_server(backend=backend)
+    server.run(transport="stdio")
+
+
 if __name__ == "__main__":
     main()
