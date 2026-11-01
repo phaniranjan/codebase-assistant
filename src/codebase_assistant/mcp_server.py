@@ -198,15 +198,16 @@ class MCPBackend:
             config=AgentConfig(max_iterations=5, max_reasoning_steps=10, token_budget=8192),
         )
 
-        # 7. Initialize Repair Workflow Coordinator
+        # 7. Initialize Repair Workflow Coordinator (disposable sandbox execution)
+        repair_perm_engine = PermissionEngine(auto_approve_consequential=True)
         self.repair_coordinator = RepairWorkflowCoordinator(
             repository_path=self.active_repo,
-            tool_registry=self.tool_registry,
             code_generator=self.code_generator,
             test_generator=self.test_generator,
             retriever=self.retriever,
             gemini_client=self.llm_client,
             policy_engine=self.policy_engine,
+            permission_engine=repair_perm_engine,
             max_retries=3,
         )
 
