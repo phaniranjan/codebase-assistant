@@ -53,8 +53,11 @@ class TestGoldenDataset(unittest.TestCase):
     def test_validate_against_actual_ai_eval_repo(self):
         candidates = [
             Path("../ai_evaluation").resolve(),
+            Path("../ai-evaluation").resolve(),
             Path("../../ai_evaluation").resolve(),
+            Path("../../ai-evaluation").resolve(),
             Path("/home/phaniranjan/AI/ai_evaluation").resolve(),
+            Path("/home/phaniranjan/AI/ai-evaluation").resolve(),
             Path(r"\\wsl.localhost\Ubuntu-26.04\home\phaniranjan\AI\ai_evaluation").resolve(),
         ]
         ai_eval_dir = None

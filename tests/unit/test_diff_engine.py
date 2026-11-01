@@ -166,7 +166,7 @@ class TestDiffEngine(unittest.TestCase):
 
             with self.assertRaises(ValueError) as ctx:
                 DiffEngine.validate_target_path(repo_path, "link_secret.py")
-            self.assertIn("resolves outside repository via symlink", str(ctx.exception))
+            self.assertIn("symlink escape detected", str(ctx.exception).lower())
 
     def test_apply_new_file_diff_mismatched_hunk_count_rejected(self):
         diff = "--- /dev/null\n" "+++ b/new.py\n" "@@ -0,0 +1,5 @@\n" "+line1\n" "+line2\n"

@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 class TestProposalGenerator:
     """Generates targeted test proposals grounded in existing code symbols and testing conventions."""
 
+    __test__ = False
+
     def __init__(
         self,
         repository_path: Path | str,
