@@ -1,11 +1,12 @@
 """Evaluation runner orchestrating retrieval and grounded Q&A across the golden dataset."""
 
-from datetime import datetime, timezone
 import logging
-from pathlib import Path
 import tempfile
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+
 from pydantic import BaseModel, Field
 
 from codebase_assistant.config import get_settings
@@ -18,7 +19,11 @@ from codebase_assistant.evaluation.metrics import (
     MetricsCalculator,
     RetrievalMetrics,
 )
-from codebase_assistant.evaluation.quality_gates import QualityGatePolicy, QualityGateResult, QualityGateThresholds
+from codebase_assistant.evaluation.quality_gates import (
+    QualityGatePolicy,
+    QualityGateResult,
+    QualityGateThresholds,
+)
 from codebase_assistant.ingestion.indexer import IncrementalIndexer
 from codebase_assistant.llm.client import GeminiClient
 from codebase_assistant.llm.mock_client import MockGeminiClient
@@ -95,7 +100,9 @@ class EvaluationRunner:
             try:
                 default_cache.relative_to(self.repository_path)
                 # Current working directory is inside target repository; safely relocate to system temp directory
-                self.cache_dir = Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "eval_cache"
+                self.cache_dir = (
+                    Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "eval_cache"
+                )
                 logger.info(
                     "Default evaluation cache was inside target repo; safely relocated to %s",
                     self.cache_dir,
@@ -107,6 +114,8 @@ class EvaluationRunner:
         self.policy = QualityGatePolicy(quality_thresholds)
 
         # 1. Initialize Providers strictly according to mode
+        self.emb_provider: Any
+        self.llm_client: Any
         if self.is_live:
             settings = get_settings()
             if not settings.gemini_api_key:
@@ -141,17 +150,23 @@ class EvaluationRunner:
 
         # 1. Load or sync index & vector store
         indexer = IncrementalIndexer(self.repository_path, cache_dir=self.cache_dir)
-        if rebuild_index:
+        manifest = indexer.load_manifest()
+        need_rebuild = rebuild_index or manifest is None
+        if need_rebuild:
             indexer.index(rebuild=True)
-        chunks = indexer.load_chunks()
-        if not chunks:
-            indexer.index()
             chunks = indexer.load_chunks()
+        else:
+            chunks = indexer.load_chunks()
+            if not chunks:
+                indexer.index()
+                chunks = indexer.load_chunks()
 
-        manager = EmbeddingManager(self.repository_path, cache_dir=self.cache_dir, provider=self.emb_provider)
+        manager = EmbeddingManager(
+            self.repository_path, cache_dir=self.cache_dir, provider=self.emb_provider
+        )
         vector_store = manager.load_vector_store()
-        if mode in ("hybrid", "dense_only") and vector_store.count() == 0:
-            manager.sync(rebuild=rebuild_index)
+        if need_rebuild or (mode in ("hybrid", "dense_only") and vector_store.count() == 0):
+            manager.sync(rebuild=need_rebuild)
             vector_store = manager.load_vector_store()
 
         retriever = HybridRetriever(
@@ -271,11 +286,15 @@ class EvaluationRunner:
 
         summaries: Dict[str, CategorySummary] = {}
         for cat_name, cat_res in by_cat.items():
-            valid_recalls = [r.retrieval.file_recall for r in cat_res if r.retrieval.file_recall is not None]
+            valid_recalls = [
+                r.retrieval.file_recall for r in cat_res if r.retrieval.file_recall is not None
+            ]
             avg_recall = sum(valid_recalls) / len(valid_recalls) if valid_recalls else None
             valid_mrrs = [r.retrieval.file_mrr for r in cat_res if r.retrieval.file_mrr is not None]
             avg_mrr = sum(valid_mrrs) / len(valid_mrrs) if valid_mrrs else 0.0
-            valid_hits = [r.retrieval.file_hit_rate for r in cat_res if r.retrieval.file_hit_rate is not None]
+            valid_hits = [
+                r.retrieval.file_hit_rate for r in cat_res if r.retrieval.file_hit_rate is not None
+            ]
             avg_hit = sum(valid_hits) / len(valid_hits) if valid_hits else 0.0
             cit_val = sum(r.citations.validity_rate for r in cat_res) / len(cat_res)
             fact_cov = sum(r.fact_coverage_score for r in cat_res) / len(cat_res)
@@ -302,17 +321,27 @@ class EvaluationRunner:
     def _compute_macro_metrics(
         self, results: List[CaseEvaluationResult], gate: QualityGateResult
     ) -> Dict[str, Any]:
-        valid_recalls = [r.retrieval.file_recall for r in results if r.retrieval.file_recall is not None]
+        valid_recalls = [
+            r.retrieval.file_recall for r in results if r.retrieval.file_recall is not None
+        ]
         avg_recall = sum(valid_recalls) / len(valid_recalls) if valid_recalls else 0.0
         valid_mrrs = [r.retrieval.file_mrr for r in results if r.retrieval.file_mrr is not None]
         avg_mrr = sum(valid_mrrs) / len(valid_mrrs) if valid_mrrs else 0.0
-        valid_hits = [r.retrieval.file_hit_rate for r in results if r.retrieval.file_hit_rate is not None]
+        valid_hits = [
+            r.retrieval.file_hit_rate for r in results if r.retrieval.file_hit_rate is not None
+        ]
         avg_hit_rate = sum(valid_hits) / len(valid_hits) if valid_hits else 0.0
 
-        valid_cits = [r.citations.validity_rate for r in results if r.is_answerable or r.citations.total_citations > 0]
+        valid_cits = [
+            r.citations.validity_rate
+            for r in results
+            if r.is_answerable or r.citations.total_citations > 0
+        ]
         avg_cit_val = sum(valid_cits) / len(valid_cits) if valid_cits else 1.0
 
-        valid_bounds = [r.citations.boundary_rate for r in results if r.citations.valid_citations > 0]
+        valid_bounds = [
+            r.citations.boundary_rate for r in results if r.citations.valid_citations > 0
+        ]
         avg_cit_bound = sum(valid_bounds) / len(valid_bounds) if valid_bounds else 1.0
 
         tp = sum(1 for r in results if r.answerability.classification == "TP")

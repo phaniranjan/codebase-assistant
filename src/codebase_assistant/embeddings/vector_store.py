@@ -36,20 +36,22 @@ class VectorStore(BaseVectorStore):
         self._metadatas: Dict[str, Dict[str, Any]] = {}
 
         # Acceleration flags
-        self._numpy = None
-        self._faiss = None
+        self._numpy: Any = None
+        self._faiss: Any = None
         self._try_load_accelerators()
 
     def _try_load_accelerators(self) -> None:
         """Attempt to lazily import numpy and faiss if available."""
         try:
             import numpy as np
+
             self._numpy = np
         except ImportError:
             self._numpy = None
 
         try:
             import faiss
+
             self._faiss = faiss
         except ImportError:
             self._faiss = None
@@ -84,7 +86,9 @@ class VectorStore(BaseVectorStore):
     ) -> None:
         """Add or update vectors in the store with strict L2 normalization."""
         if len(ids) != len(vectors):
-            raise ValueError(f"ids count ({len(ids)}) does not match vectors count ({len(vectors)})")
+            raise ValueError(
+                f"ids count ({len(ids)}) does not match vectors count ({len(vectors)})"
+            )
 
         if metadatas is not None and len(metadatas) != len(ids):
             raise ValueError("metadatas count does not match ids count")

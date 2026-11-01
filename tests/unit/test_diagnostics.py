@@ -69,7 +69,9 @@ class TestDiagnosticEngine(unittest.TestCase):
         self.assertFalse(diag.passed)
         self.assertEqual(diag.error_type, "ZeroDivisionError")
         self.assertIn("ZeroDivisionError", diag.failure_summary)
-        self.assertIn("test_div_zero (tests.unit.test_calc.TestCalc.test_div_zero)", diag.failing_tests)
+        self.assertIn(
+            "test_div_zero (tests.unit.test_calc.TestCalc.test_div_zero)", diag.failing_tests
+        )
         self.assertIn("Division by zero", diag.hypothesized_cause)
         self.assertIn("defensive checks", diag.recommended_fix_direction)
         self.assertTrue(any("src/calc.py:12" in loc for loc in diag.file_locations))

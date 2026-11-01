@@ -1,9 +1,10 @@
 """Unit tests for the CLI repair command."""
 
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
+
 from click.testing import CliRunner
 
 from codebase_assistant.cli import main
@@ -22,7 +23,9 @@ class TestRepairCLI(unittest.TestCase):
         src_dir = self.repo_dir / "src"
         src_dir.mkdir(parents=True)
         self.calc_file = src_dir / "calc.py"
-        self.calc_file.write_text("def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8")
+        self.calc_file.write_text(
+            "def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8"
+        )
 
         tests_dir = self.repo_dir / "tests" / "unit"
         tests_dir.mkdir(parents=True)
@@ -49,12 +52,17 @@ class TestRepairCLI(unittest.TestCase):
             main,
             [
                 "repair",
-                "--repo", str(self.repo_dir),
-                "--task", "Add multiply function in src/calc.py",
-                "--test-command", "python -m unittest tests/unit/test_calc.py",
-                "--provider", "mock",
+                "--repo",
+                str(self.repo_dir),
+                "--task",
+                "Add multiply function in src/calc.py",
+                "--test-command",
+                "python -m unittest tests/unit/test_calc.py",
+                "--provider",
+                "mock",
                 "--auto-approve",
-                "--cache-dir", str(self.cache_dir),
+                "--cache-dir",
+                str(self.cache_dir),
             ],
         )
         self.assertEqual(res.exit_code, 0, res.output)
@@ -66,12 +74,17 @@ class TestRepairCLI(unittest.TestCase):
             main,
             [
                 "repair",
-                "--repo", str(self.repo_dir),
-                "--task", "Add helper function in src/calc.py",
-                "--test-command", "python -m unittest tests/unit/test_calc.py",
-                "--provider", "mock",
+                "--repo",
+                str(self.repo_dir),
+                "--task",
+                "Add helper function in src/calc.py",
+                "--test-command",
+                "python -m unittest tests/unit/test_calc.py",
+                "--provider",
+                "mock",
                 "--auto-approve",
-                "--cache-dir", str(self.cache_dir),
+                "--cache-dir",
+                str(self.cache_dir),
                 "--json",
             ],
         )
@@ -87,13 +100,19 @@ class TestRepairCLI(unittest.TestCase):
             main,
             [
                 "repair",
-                "--repo", str(self.repo_dir),
-                "--task", "Add helper function in src/calc.py",
-                "--test-command", "python -m unittest tests/unit/test_calc.py",
-                "--provider", "mock",
+                "--repo",
+                str(self.repo_dir),
+                "--task",
+                "Add helper function in src/calc.py",
+                "--test-command",
+                "python -m unittest tests/unit/test_calc.py",
+                "--provider",
+                "mock",
                 "--auto-approve",
-                "--cache-dir", str(self.cache_dir),
-                "--report-file", str(report_path),
+                "--cache-dir",
+                str(self.cache_dir),
+                "--report-file",
+                str(report_path),
             ],
         )
         self.assertEqual(res.exit_code, 0, res.output)

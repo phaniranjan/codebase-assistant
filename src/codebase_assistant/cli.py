@@ -1,11 +1,14 @@
+from typing import Any, cast
+
 """Command-line interface for Codebase Assistant."""
 
 import hashlib
 import json
-from pathlib import Path
 import shutil
 import sys
 import tempfile
+from pathlib import Path
+
 import click
 
 # Ensure utf-8 terminal output on Windows consoles
@@ -15,6 +18,7 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+console: Any = None
 try:
     from rich.console import Console
     from rich.table import Table
@@ -72,6 +76,20 @@ def print_success(title: str, value: str = ""):
         print(f"{title} {value}")
 
 
+def print_warning(title: str, value: str = ""):
+    if rich_available and console:
+        console.print(f"[bold yellow]{title}[/bold yellow] {value}")
+    else:
+        print(f"{title} {value}")
+
+
+def print_error(title: str, value: str = ""):
+    if rich_available and console:
+        console.print(f"[bold red]{title}[/bold red] {value}")
+    else:
+        print(f"{title} {value}")
+
+
 @click.group()
 @click.version_option(version="0.1.0")
 def main():
@@ -80,8 +98,16 @@ def main():
 
 
 @main.command()
-@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
-@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.argument(
+    "repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False)
+)
+@click.option(
+    "--repo-path",
+    "repo_path_opt",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Target repository path.",
+)
 def scan(repo_path: str | None, repo_path_opt: str | None):
     """Scan a repository and display detected files, revisions, and exclusions."""
     target = Path(repo_path_opt or repo_path or ".").resolve()
@@ -90,7 +116,9 @@ def scan(repo_path: str | None, repo_path_opt: str | None):
     scanner = RepositoryScanner(target)
     eligible_files, revision, excluded_files = scanner.scan()
 
-    print_success("Source Revision:", f"{revision.revision_id} (branch: {revision.branch or 'none'})")
+    print_success(
+        "Source Revision:", f"{revision.revision_id} (branch: {revision.branch or 'none'})"
+    )
     print_success("Eligible Files:", str(len(eligible_files)))
     print_info("Excluded Files / Rules:", str(len(excluded_files)))
 
@@ -115,8 +143,16 @@ def scan(repo_path: str | None, repo_path_opt: str | None):
 
 
 @main.command()
-@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
-@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.argument(
+    "repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False)
+)
+@click.option(
+    "--repo-path",
+    "repo_path_opt",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Target repository path.",
+)
 @click.option("--rebuild", is_flag=True, help="Rebuild the entire index from scratch.")
 @click.option("--cache-dir", default=None, help="Directory to store the index manifest and chunks.")
 def index(repo_path: str | None, repo_path_opt: str | None, rebuild: bool, cache_dir: str | None):
@@ -130,7 +166,10 @@ def index(repo_path: str | None, repo_path_opt: str | None, rebuild: bool, cache
 
     metrics = [
         ("Repository", report.repository_path),
-        ("Revision", str(report.source_revision.revision_id if report.source_revision else "unknown")),
+        (
+            "Revision",
+            str(report.source_revision.revision_id if report.source_revision else "unknown"),
+        ),
         ("Added Files", str(len(report.added_files))),
         ("Modified Files", str(len(report.modified_files))),
         ("Deleted Files", str(len(report.deleted_files))),
@@ -159,8 +198,16 @@ def index(repo_path: str | None, repo_path_opt: str | None, rebuild: bool, cache
 
 
 @main.command(name="inspect-chunks")
-@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
-@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.argument(
+    "repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False)
+)
+@click.option(
+    "--repo-path",
+    "repo_path_opt",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Target repository path.",
+)
 @click.option("--cache-dir", default=None, help="Directory containing the index.")
 @click.option("--file", "file_filter", default=None, help="Filter chunks by file path.")
 @click.option("--symbol", "symbol_filter", default=None, help="Filter chunks by symbol name.")
@@ -187,17 +234,29 @@ def inspect_chunks(
     if file_filter:
         filtered = [c for c in filtered if file_filter.lower() in c.file_path.lower()]
     if symbol_filter:
-        filtered = [c for c in filtered if c.symbol_name and symbol_filter.lower() in c.symbol_name.lower()]
+        filtered = [
+            c for c in filtered if c.symbol_name and symbol_filter.lower() in c.symbol_name.lower()
+        ]
 
     print(f"\nStored Chunks ({len(filtered)} matching, showing up to {limit}):")
     for c in filtered[:limit]:
         symbol_str = f" ({c.symbol_name})" if c.symbol_name else ""
-        print(f"  [{c.chunk_type.value.upper():12}]{symbol_str} {c.file_path}:{c.start_line}-{c.end_line} [hash: {c.content_hash[:8]}]")
+        print(
+            f"  [{c.chunk_type.value.upper():12}]{symbol_str} {c.file_path}:{c.start_line}-{c.end_line} [hash: {c.content_hash[:8]}]"
+        )
 
 
 @main.command(name="embed")
-@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
-@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.argument(
+    "repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False)
+)
+@click.option(
+    "--repo-path",
+    "repo_path_opt",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Target repository path.",
+)
 @click.option(
     "--provider",
     "provider_type",
@@ -206,7 +265,12 @@ def inspect_chunks(
     help="Embedding provider ('gemini' or 'mock').",
 )
 @click.option("--rebuild", is_flag=True, help="Recompute all embeddings from scratch.")
-@click.option("--allow-fallback", is_flag=True, default=False, help="Allow falling back to mock provider if Gemini initialization fails.")
+@click.option(
+    "--allow-fallback",
+    is_flag=True,
+    default=False,
+    help="Allow falling back to mock provider if Gemini initialization fails.",
+)
 @click.option("--cache-dir", default=None, help="Custom cache directory.")
 def embed(
     repo_path: str | None,
@@ -224,6 +288,7 @@ def embed(
     cache = Path(cache_dir).resolve() if cache_dir else target_repo / get_settings().cache_dir
     print_info("Cache Directory", str(cache))
 
+    provider: Any = None
     if provider_type.lower() == "mock":
         provider = MockEmbeddingProvider()
     else:
@@ -237,7 +302,10 @@ def embed(
                 provider = MockEmbeddingProvider()
             else:
                 print(f"\n[Error] {e}", file=sys.stderr)
-                print("Failed to initialize Gemini embedding provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                print(
+                    "Failed to initialize Gemini embedding provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
     manager = EmbeddingManager(target_repo, cache_dir=cache, provider=provider)
@@ -266,8 +334,16 @@ def embed(
 
 @main.command(name="search")
 @click.argument("query")
-@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
-@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.argument(
+    "repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False)
+)
+@click.option(
+    "--repo-path",
+    "repo_path_opt",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Target repository path.",
+)
 @click.option(
     "--mode",
     default="hybrid",
@@ -283,7 +359,12 @@ def embed(
 )
 @click.option("--top-k", default=5, type=int, help="Number of chunks to retrieve.")
 @click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
-@click.option("--allow-fallback", is_flag=True, default=False, help="Allow falling back to mock provider if Gemini initialization fails.")
+@click.option(
+    "--allow-fallback",
+    is_flag=True,
+    default=False,
+    help="Allow falling back to mock provider if Gemini initialization fails.",
+)
 @click.option("--cache-dir", default=None, help="Custom cache directory.")
 def search(
     query: str,
@@ -304,9 +385,12 @@ def search(
     chunks = indexer.load_chunks()
 
     if not chunks:
-        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.")
+        print(
+            f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first."
+        )
         return
 
+    provider: Any = None
     if provider_type.lower() == "mock":
         provider = MockEmbeddingProvider()
     else:
@@ -320,7 +404,10 @@ def search(
                 provider = MockEmbeddingProvider()
             else:
                 print(f"\n[Error] {e}", file=sys.stderr)
-                print("Failed to initialize Gemini embedding provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                print(
+                    "Failed to initialize Gemini embedding provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
     manager = EmbeddingManager(target_repo, cache_dir=cache, provider=provider)
@@ -337,7 +424,7 @@ def search(
         embedding_provider=provider,
     )
 
-    results = retriever.search(query=query, top_k=top_k, mode=mode.lower())
+    results = retriever.search(query=query, top_k=top_k, mode=cast(Any, mode.lower()))
 
     if not results:
         print(f"No matching code chunks found for query: '{query}'")
@@ -371,20 +458,32 @@ def search(
             d_rank = f"dense:{r.dense_rank}" if r.dense_rank else "dense:-"
             s_rank = f"sparse:{r.sparse_rank}" if r.sparse_rank else "sparse:-"
             sym = f" ({r.chunk.symbol_name})" if r.chunk.symbol_name else ""
-            print(f"  {rank}. [{r.score:.4f}] {r.chunk.file_path}:{r.chunk.start_line}-{r.chunk.end_line}{sym} [{d_rank}, {s_rank}]")
+            print(
+                f"  {rank}. [{r.score:.4f}] {r.chunk.file_path}:{r.chunk.start_line}-{r.chunk.end_line}{sym} [{d_rank}, {s_rank}]"
+            )
 
     # Assemble context block with budget
     assembler = ContextAssembler(default_max_tokens=budget)
     assembled = assembler.assemble(results, max_tokens=budget)
 
-    print(f"\n--- Assembled Context (Estimated {assembled.estimated_tokens}/{budget} tokens, {len(assembled.included_chunks)} included) ---")
+    print(
+        f"\n--- Assembled Context (Estimated {assembled.estimated_tokens}/{budget} tokens, {len(assembled.included_chunks)} included) ---"
+    )
     print(assembled.formatted_text)
 
 
 @main.command(name="ask")
 @click.argument("question")
-@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
-@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.argument(
+    "repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False)
+)
+@click.option(
+    "--repo-path",
+    "repo_path_opt",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Target repository path.",
+)
 @click.option(
     "--mode",
     default="hybrid",
@@ -402,7 +501,12 @@ def search(
 @click.option("--temperature", default=0.2, type=float, help="Sampling temperature.")
 @click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
 @click.option("--stream/--no-stream", default=False, help="Stream the answer as it is generated.")
-@click.option("--allow-fallback", is_flag=True, default=False, help="Allow falling back to mock provider if Gemini initialization fails.")
+@click.option(
+    "--allow-fallback",
+    is_flag=True,
+    default=False,
+    help="Allow falling back to mock provider if Gemini initialization fails.",
+)
 @click.option("--cache-dir", default=None, help="Custom cache directory.")
 def ask(
     question: str,
@@ -425,10 +529,14 @@ def ask(
     chunks = indexer.load_chunks()
 
     if not chunks:
-        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.")
+        print(
+            f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first."
+        )
         return
 
     # Initialize Embedding Provider
+    emb_provider: Any = None
+    llm_client: Any = None
     if provider_type.lower() == "mock":
         emb_provider = MockEmbeddingProvider()
         llm_client = MockGeminiClient()
@@ -446,7 +554,10 @@ def ask(
                 llm_client = MockGeminiClient()
             else:
                 print(f"\n[Error] {e}", file=sys.stderr)
-                print("Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                print(
+                    "Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
     # Load Vector Store
@@ -483,7 +594,7 @@ def ask(
         stream_res = qa_engine.ask_stream(
             query=question,
             top_k=top_k,
-            mode=mode.lower(),
+            mode=cast(Any, mode.lower()),
             temperature=temperature,
             budget=budget,
         )
@@ -507,7 +618,7 @@ def ask(
         resp = qa_engine.ask(
             query=question,
             top_k=top_k,
-            mode=mode.lower(),
+            mode=cast(Any, mode.lower()),
             temperature=temperature,
             budget=budget,
         )
@@ -528,9 +639,22 @@ def ask(
 
 
 @main.command(name="evaluate")
-@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
-@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
-@click.option("--dataset", "dataset_path", default="data/golden_dataset.json", help="Path to golden evaluation dataset JSON.")
+@click.argument(
+    "repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False)
+)
+@click.option(
+    "--repo-path",
+    "repo_path_opt",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Target repository path.",
+)
+@click.option(
+    "--dataset",
+    "dataset_path",
+    default="data/golden_dataset.json",
+    help="Path to golden evaluation dataset JSON.",
+)
 @click.option(
     "--mode",
     default="hybrid",
@@ -539,11 +663,34 @@ def ask(
 )
 @click.option("--top-k", default=5, type=int, help="Number of chunks to retrieve per question.")
 @click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
-@click.option("--live", is_flag=True, default=False, help="Explicitly enable live Gemini evaluation (requires GEMINI_API_KEY).")
-@click.option("--fail-under", is_flag=True, default=False, help="Enforce quality gates and exit with code 1 if gates fail.")
-@click.option("--output-json", default="reports/eval_report.json", help="File path to save JSON evaluation report (default: reports/eval_report.json).")
-@click.option("--output-markdown", default="reports/eval_report.md", help="File path to save human-readable Markdown summary report (default: reports/eval_report.md).")
-@click.option("--no-report", is_flag=True, default=False, help="Disable saving evaluation report files to disk.")
+@click.option(
+    "--live",
+    is_flag=True,
+    default=False,
+    help="Explicitly enable live Gemini evaluation (requires GEMINI_API_KEY).",
+)
+@click.option(
+    "--fail-under",
+    is_flag=True,
+    default=False,
+    help="Enforce quality gates and exit with code 1 if gates fail.",
+)
+@click.option(
+    "--output-json",
+    default="reports/eval_report.json",
+    help="File path to save JSON evaluation report (default: reports/eval_report.json).",
+)
+@click.option(
+    "--output-markdown",
+    default="reports/eval_report.md",
+    help="File path to save human-readable Markdown summary report (default: reports/eval_report.md).",
+)
+@click.option(
+    "--no-report",
+    is_flag=True,
+    default=False,
+    help="Disable saving evaluation report files to disk.",
+)
 @click.option("--cache-dir", default=None, help="Custom cache directory.")
 def evaluate(
     repo_path: str | None,
@@ -592,7 +739,12 @@ def evaluate(
             p_json = Path(output_json).resolve()
             try:
                 p_json.relative_to(target_repo)
-                p_json = Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "reports" / Path(output_json).name
+                p_json = (
+                    Path(tempfile.gettempdir()).resolve()
+                    / "codebase_assistant"
+                    / "reports"
+                    / Path(output_json).name
+                )
             except ValueError:
                 pass
             final_output_json = str(p_json)
@@ -601,7 +753,12 @@ def evaluate(
             p_md = Path(output_markdown).resolve()
             try:
                 p_md.relative_to(target_repo)
-                p_md = Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "reports" / Path(output_markdown).name
+                p_md = (
+                    Path(tempfile.gettempdir()).resolve()
+                    / "codebase_assistant"
+                    / "reports"
+                    / Path(output_markdown).name
+                )
             except ValueError:
                 pass
             final_output_markdown = str(p_md)
@@ -641,7 +798,9 @@ def evaluate(
         sys.exit(1)
 
     # 3. Execute Evaluation (Single mode or 'all' comparison)
-    modes_to_run = ["hybrid", "dense_only", "sparse_only"] if mode.lower() == "all" else [mode.lower()]
+    modes_to_run = (
+        ["hybrid", "dense_only", "sparse_only"] if mode.lower() == "all" else [mode.lower()]
+    )
     reports = []
 
     for m in modes_to_run:
@@ -655,7 +814,11 @@ def evaluate(
         reports.append(report)
 
         # Print Gate Summary
-        status_str = "[bold green]PASSED[/bold green]" if report.quality_gate.passed else "[bold red]FAILED[/bold red]"
+        status_str = (
+            "[bold green]PASSED[/bold green]"
+            if report.quality_gate.passed
+            else "[bold red]FAILED[/bold red]"
+        )
         print(f"\nQuality Gate Status: {status_str}")
 
         if rich_available and console:
@@ -670,7 +833,11 @@ def evaluate(
             for g in report.quality_gate.gate_details:
                 res_color = "green" if g.passed else "red"
                 res_txt = "PASS" if g.passed else "FAIL"
-                thresh = f"<= {g.threshold:.2f}" if "unnecessary" in g.gate_name else f">= {g.threshold:.2f}"
+                thresh = (
+                    f"<= {g.threshold:.2f}"
+                    if "unnecessary" in g.gate_name
+                    else f">= {g.threshold:.2f}"
+                )
                 gate_table.add_row(
                     g.gate_name,
                     "Hard" if g.is_hard_gate else "Provisional",
@@ -704,7 +871,9 @@ def evaluate(
             print("\n--- Gate Details ---")
             for g in report.quality_gate.gate_details:
                 res_txt = "PASS" if g.passed else "FAIL"
-                print(f"  [{res_txt:4}] {g.gate_name:32}: actual={g.actual_value:.4f} (thresh={g.threshold:.2f})")
+                print(
+                    f"  [{res_txt:4}] {g.gate_name:32}: actual={g.actual_value:.4f} (thresh={g.threshold:.2f})"
+                )
 
         # Save Report artifacts for the primary mode
         if final_output_json or final_output_markdown:
@@ -750,7 +919,9 @@ def _resolve_proposal_cache(target_repo: Path, cache_dir: str | None) -> Path:
 
     # Safe external cache in temp directory keyed by target repository path
     repo_hash = hashlib.sha256(str(target_repo).encode("utf-8")).hexdigest()[:12]
-    external_cache = Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "proposal_cache" / repo_hash
+    external_cache = (
+        Path(tempfile.gettempdir()).resolve() / "codebase_assistant" / "proposal_cache" / repo_hash
+    )
     external_cache.mkdir(parents=True, exist_ok=True)
 
     settings = get_settings()
@@ -811,9 +982,7 @@ def _display_and_save_proposal(
             else:
                 print("✓ AST Syntax: Valid Python")
         else:
-            err_msg = (
-                f"✗ AST Syntax Error: {'; '.join(prop.syntax_errors) if prop.syntax_errors else 'Parsing failed'}"
-            )
+            err_msg = f"✗ AST Syntax Error: {'; '.join(prop.syntax_errors) if prop.syntax_errors else 'Parsing failed'}"
             if rich_available and console:
                 console.print(f"[bold red]{err_msg}[/bold red]")
             else:
@@ -848,7 +1017,9 @@ def _display_and_save_proposal(
             pass
 
         p_patch.parent.mkdir(parents=True, exist_ok=True)
-        diff_payload = "\n\n".join(prop.unified_diff for prop in result.proposals if prop.unified_diff)
+        diff_payload = "\n\n".join(
+            prop.unified_diff for prop in result.proposals if prop.unified_diff
+        )
         p_patch.write_text(diff_payload, encoding="utf-8")
         print_success("\nSaved unified diff patch to:", str(p_patch))
 
@@ -860,9 +1031,19 @@ def _display_and_save_proposal(
 
 @main.command(name="propose-code")
 @click.argument("task")
-@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
-@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
-@click.option("--file", "target_file", default=None, help="Target file relative path to modify or create.")
+@click.argument(
+    "repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False)
+)
+@click.option(
+    "--repo-path",
+    "repo_path_opt",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Target repository path.",
+)
+@click.option(
+    "--file", "target_file", default=None, help="Target file relative path to modify or create."
+)
 @click.option(
     "--mode",
     default="hybrid",
@@ -878,9 +1059,18 @@ def _display_and_save_proposal(
 )
 @click.option("--top-k", default=5, type=int, help="Number of code chunks to retrieve.")
 @click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
-@click.option("--allow-fallback", is_flag=True, default=False, help="Allow falling back to mock provider if Gemini initialization fails.")
+@click.option(
+    "--allow-fallback",
+    is_flag=True,
+    default=False,
+    help="Allow falling back to mock provider if Gemini initialization fails.",
+)
 @click.option("--cache-dir", default=None, help="Custom cache directory.")
-@click.option("--output-patch", default=None, help="Optional external file path to save the generated unified diff patch.")
+@click.option(
+    "--output-patch",
+    default=None,
+    help="Optional external file path to save the generated unified diff patch.",
+)
 def propose_code(
     task: str,
     repo_path: str | None,
@@ -920,9 +1110,14 @@ def propose_code(
         chunks = indexer.load_chunks()
 
     if not chunks:
-        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.", file=sys.stderr)
+        print(
+            f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
+    emb_provider: Any = None
+    llm_client: Any = None
     if provider_type.lower() == "mock":
         emb_provider = MockEmbeddingProvider()
         llm_client = MockGeminiClient()
@@ -940,7 +1135,10 @@ def propose_code(
                 llm_client = MockGeminiClient()
             else:
                 print(f"\n[Error] {e}", file=sys.stderr)
-                print("Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                print(
+                    "Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
     manager = EmbeddingManager(target_repo, cache_dir=cache, provider=emb_provider)
@@ -983,8 +1181,16 @@ def propose_code(
 
 @main.command(name="propose-tests")
 @click.argument("target_file")
-@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
-@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.argument(
+    "repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False)
+)
+@click.option(
+    "--repo-path",
+    "repo_path_opt",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Target repository path.",
+)
 @click.option(
     "--framework",
     default=None,
@@ -1006,9 +1212,18 @@ def propose_code(
 )
 @click.option("--top-k", default=5, type=int, help="Number of code chunks to retrieve.")
 @click.option("--budget", default=8192, type=int, help="Token budget limit for context assembly.")
-@click.option("--allow-fallback", is_flag=True, default=False, help="Allow falling back to mock provider if Gemini initialization fails.")
+@click.option(
+    "--allow-fallback",
+    is_flag=True,
+    default=False,
+    help="Allow falling back to mock provider if Gemini initialization fails.",
+)
 @click.option("--cache-dir", default=None, help="Custom cache directory.")
-@click.option("--output-patch", default=None, help="Optional external file path to save the generated unified diff patch.")
+@click.option(
+    "--output-patch",
+    default=None,
+    help="Optional external file path to save the generated unified diff patch.",
+)
 def propose_tests(
     target_file: str,
     repo_path: str | None,
@@ -1048,9 +1263,14 @@ def propose_tests(
         chunks = indexer.load_chunks()
 
     if not chunks:
-        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.", file=sys.stderr)
+        print(
+            f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
+    emb_provider: Any = None
+    llm_client: Any = None
     if provider_type.lower() == "mock":
         emb_provider = MockEmbeddingProvider()
         llm_client = MockGeminiClient()
@@ -1068,7 +1288,10 @@ def propose_tests(
                 llm_client = MockGeminiClient()
             else:
                 print(f"\n[Error] {e}", file=sys.stderr)
-                print("Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                print(
+                    "Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
     manager = EmbeddingManager(target_repo, cache_dir=cache, provider=emb_provider)
@@ -1111,8 +1334,16 @@ def propose_tests(
 
 @main.command(name="agent")
 @click.argument("task")
-@click.argument("repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False))
-@click.option("--repo-path", "repo_path_opt", default=None, type=click.Path(exists=True, file_okay=False), help="Target repository path.")
+@click.argument(
+    "repo_path", required=False, default=None, type=click.Path(exists=True, file_okay=False)
+)
+@click.option(
+    "--repo-path",
+    "repo_path_opt",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Target repository path.",
+)
 @click.option(
     "--provider",
     "provider_type",
@@ -1120,12 +1351,31 @@ def propose_tests(
     type=click.Choice(["gemini", "mock"], case_sensitive=False),
     help="Provider for agent reasoning and embeddings.",
 )
-@click.option("--allow-fallback", is_flag=True, default=False, help="Allow falling back to mock provider if Gemini initialization fails.")
-@click.option("--auto-approve", is_flag=True, default=False, help="Auto-approve consequential tool actions (e.g. running tests, applying patches).")
-@click.option("--max-iterations", default=5, type=int, help="Maximum tool executions per turn (default: 5).")
+@click.option(
+    "--allow-fallback",
+    is_flag=True,
+    default=False,
+    help="Allow falling back to mock provider if Gemini initialization fails.",
+)
+@click.option(
+    "--auto-approve",
+    is_flag=True,
+    default=False,
+    help="Auto-approve consequential tool actions (e.g. running tests, applying patches).",
+)
+@click.option(
+    "--max-iterations", default=5, type=int, help="Maximum tool executions per turn (default: 5)."
+)
 @click.option("--max-steps", default=10, type=int, help="Maximum reasoning steps (default: 10).")
-@click.option("--timeout", default=30.0, type=float, help="Command execution timeout in seconds (default: 30.0s).")
-@click.option("--budget", default=8192, type=int, help="Token context budget limit (default: 8192).")
+@click.option(
+    "--timeout",
+    default=30.0,
+    type=float,
+    help="Command execution timeout in seconds (default: 30.0s).",
+)
+@click.option(
+    "--budget", default=8192, type=int, help="Token context budget limit (default: 8192)."
+)
 @click.option("--cache-dir", default=None, help="Custom cache directory.")
 def agent(
     task: str,
@@ -1155,9 +1405,14 @@ def agent(
         chunks = indexer.load_chunks()
 
     if not chunks:
-        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.", file=sys.stderr)
+        print(
+            f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
+    emb_provider: Any = None
+    llm_client: Any = None
     if provider_type.lower() == "mock":
         emb_provider = MockEmbeddingProvider()
         llm_client = MockGeminiClient()
@@ -1175,7 +1430,10 @@ def agent(
                 llm_client = MockGeminiClient()
             else:
                 print(f"\n[Error] {e}", file=sys.stderr)
-                print("Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                print(
+                    "Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
     manager = EmbeddingManager(target_repo, cache_dir=cache, provider=emb_provider)
@@ -1273,15 +1531,68 @@ def agent(
 @click.option("--task", "-t", "task_opt", help="Task description or bug report to repair.")
 @click.option("--repo", "-r", "repo_path_opt", help="Target repository directory.")
 @click.option("--target-file", "-f", help="Target source file to modify.")
-@click.option("--test-command", "-c", help="Test command to run for verification (e.g. 'pytest tests/test_calc.py').")
-@click.option("--max-retries", "-m", default=3, type=int, help="Maximum bounded repair attempts (default: 3).")
-@click.option("--provider", "-p", "provider_type", default="gemini", type=click.Choice(["gemini", "mock"], case_sensitive=False), help="LLM and embedding provider.")
-@click.option("--allow-fallback/--no-fallback", default=True, help="Fall back to mock if Gemini API fails.")
-@click.option("--auto-approve", is_flag=True, default=False, help="Auto-approve consequential actions (applying patch, running tests).")
-@click.option("--timeout", default=30.0, type=float, help="Command execution timeout in seconds (default: 30.0s).")
+@click.option(
+    "--test-command",
+    "-c",
+    help="Test command to run for verification (e.g. 'pytest tests/test_calc.py').",
+)
+@click.option(
+    "--max-retries", "-m", default=3, type=int, help="Maximum bounded repair attempts (default: 3)."
+)
+@click.option(
+    "--provider",
+    "-p",
+    "provider_type",
+    default="gemini",
+    type=click.Choice(["gemini", "mock"], case_sensitive=False),
+    help="LLM and embedding provider.",
+)
+@click.option(
+    "--allow-fallback",
+    is_flag=True,
+    default=False,
+    help="Allow falling back to mock provider if Gemini API fails.",
+)
+@click.option(
+    "--auto-approve",
+    is_flag=True,
+    default=False,
+    help="Auto-approve consequential actions (applying patch, running tests).",
+)
+@click.option(
+    "--timeout",
+    default=30.0,
+    type=float,
+    help="Command execution timeout in seconds (default: 30.0s).",
+)
+@click.option(
+    "--budget",
+    default=8192,
+    type=int,
+    help="Cumulative token context budget limit (default: 8192).",
+)
+@click.option(
+    "--max-steps", default=15, type=int, help="Cumulative reasoning steps limit (default: 15)."
+)
+@click.option(
+    "--workflow-timeout",
+    default=120.0,
+    type=float,
+    help="Workflow execution timeout in seconds (default: 120.0s).",
+)
 @click.option("--cache-dir", default=None, help="Custom cache directory.")
-@click.option("--report-file", type=click.Path(dir_okay=False), help="Path to write the markdown repair report.")
-@click.option("--json", "json_output", is_flag=True, default=False, help="Output machine-readable JSON report.")
+@click.option(
+    "--report-file",
+    type=click.Path(dir_okay=False),
+    help="Path to write the markdown repair report.",
+)
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    default=False,
+    help="Output machine-readable JSON report.",
+)
 def repair(
     task: str | None,
     task_opt: str | None,
@@ -1293,6 +1604,9 @@ def repair(
     allow_fallback: bool,
     auto_approve: bool,
     timeout: float,
+    budget: int,
+    max_steps: int,
+    workflow_timeout: float,
     cache_dir: str | None,
     report_file: str | None,
     json_output: bool,
@@ -1300,7 +1614,10 @@ def repair(
     """Execute an agentic repair workflow: plan, retrieve, propose, apply, test, diagnose, and self-repair."""
     task_str = task_opt or task
     if not task_str:
-        print("Error: Task description is required. Provide it as an argument or with --task.", file=sys.stderr)
+        print(
+            "Error: Task description is required. Provide it as an argument or with --task.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     target_repo = Path(repo_path_opt or ".").resolve()
@@ -1319,9 +1636,14 @@ def repair(
         chunks = indexer.load_chunks()
 
     if not chunks:
-        print(f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.", file=sys.stderr)
+        print(
+            f"Error: No indexed chunks found in {cache}. Please run 'codebase-assistant index' first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
+    emb_provider: Any = None
+    llm_client: Any = None
     if provider_type.lower() == "mock":
         emb_provider = MockEmbeddingProvider()
         llm_client = MockGeminiClient()
@@ -1340,7 +1662,10 @@ def repair(
                 llm_client = MockGeminiClient()
             else:
                 print(f"\n[Error] {e}", file=sys.stderr)
-                print("Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.", file=sys.stderr)
+                print(
+                    "Failed to initialize Gemini client/provider. Set GEMINI_API_KEY or specify --provider mock or --allow-fallback.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
     manager = EmbeddingManager(target_repo, cache_dir=cache, provider=emb_provider)
@@ -1395,7 +1720,10 @@ def repair(
         permission_engine=perm_engine,
         tool_registry=tool_registry,
         max_retries=max_retries,
+        max_reasoning_steps=max_steps,
         command_timeout_seconds=timeout,
+        workflow_timeout_seconds=workflow_timeout,
+        token_budget=budget,
     )
 
     if not json_output:

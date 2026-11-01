@@ -74,7 +74,10 @@ class AgentCoordinator:
         # Format system prompt with registered tools
         tool_specs = []
         for tool in self.tool_registry.get_tool_definitions():
-            params_str = ", ".join(f"{k}: {v.get('type', 'any')}" for k, v in tool.parameters.get("properties", {}).items())
+            params_str = ", ".join(
+                f"{k}: {v.get('type', 'any')}"
+                for k, v in tool.parameters.get("properties", {}).items()
+            )
             tool_specs.append(
                 f"- `{tool.name}({params_str})` [{tool.tool_type.value.upper()}]: {tool.description}"
             )
@@ -116,7 +119,10 @@ class AgentCoordinator:
                 if "Action:" in extracted:
                     final_answer = f"Agent reached maximum tool iterations limit ({self.config.max_iterations})."
                 else:
-                    final_answer = extracted or f"Agent reached maximum tool iterations limit ({self.config.max_iterations})."
+                    final_answer = (
+                        extracted
+                        or f"Agent reached maximum tool iterations limit ({self.config.max_iterations})."
+                    )
                 break
 
             # 3. Model generation step
@@ -146,12 +152,18 @@ class AgentCoordinator:
                 steps.append(step)
 
                 # Record observation
-                obs_text = tool_result.output if tool_result.success else f"ERROR: {tool_result.error}"
-                conversation_history.append(f"Thought: {step.thought}\nAction: {tool_call.tool_name}({json.dumps(tool_call.arguments)})\nObservation: {obs_text}\n")
+                obs_text = (
+                    tool_result.output if tool_result.success else f"ERROR: {tool_result.error}"
+                )
+                conversation_history.append(
+                    f"Thought: {step.thought}\nAction: {tool_call.tool_name}({json.dumps(tool_call.arguments)})\nObservation: {obs_text}\n"
+                )
 
                 if not tool_result.is_authorized:
                     stopping_reason = AgentStoppingReason.AUTHORIZATION_DENIED
-                    final_answer = f"Task halted: Authorization was denied for tool '{tool_call.tool_name}'."
+                    final_answer = (
+                        f"Task halted: Authorization was denied for tool '{tool_call.tool_name}'."
+                    )
                     break
             elif response_text.startswith("Thought:") or "Thought:" in response_text:
                 # Model produced reasoning but no action or final answer yet; record step and continue reasoning
@@ -172,7 +184,11 @@ class AgentCoordinator:
 
         duration = time.time() - start_time
         proposals_payload = [
-            p.model_dump() if hasattr(p, "model_dump") else (p.dict() if hasattr(p, "dict") else vars(p))
+            (
+                p.model_dump()
+                if hasattr(p, "model_dump")
+                else (p.dict() if hasattr(p, "dict") else vars(p))
+            )
             for p in self.tool_registry.collected_proposals
         ]
 
@@ -193,7 +209,9 @@ class AgentCoordinator:
         match = re.search(r"Action:\s*([a-zA-Z0-9_]+)\((.*?)\)", text, re.DOTALL)
         if not match:
             # Alternate pattern: Action: tool_name\n```json ... ```
-            alt_match = re.search(r"Action:\s*([a-zA-Z0-9_]+)\s*```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+            alt_match = re.search(
+                r"Action:\s*([a-zA-Z0-9_]+)\s*```(?:json)?\s*(.*?)\s*```", text, re.DOTALL
+            )
             if alt_match:
                 tool_name = alt_match.group(1).strip()
                 raw_args = alt_match.group(2).strip()
@@ -218,7 +236,9 @@ class AgentCoordinator:
             pass
 
         # Fallback to key-value regex parsing for simple args
-        kv_pairs = re.findall(r'([a-zA-Z0-9_]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([0-9]+))', raw_args)
+        kv_pairs = re.findall(
+            r'([a-zA-Z0-9_]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([0-9]+))', raw_args
+        )
         parsed_args = {}
         for k, v1, v2, v3 in kv_pairs:
             val = v1 or v2 or (int(v3) if v3.isdigit() else v3)

@@ -116,7 +116,9 @@ class ContextAssembler:
             seen_spans.add(span_key)
 
         joined_chunks = "\n".join(blocks).strip()
-        context_section = f"## Context & Source References\n\n{joined_chunks}" if joined_chunks else ""
+        context_section = (
+            f"## Context & Source References\n\n{joined_chunks}" if joined_chunks else ""
+        )
         full_prompt = f"{prompt_prefix}{context_section}{prompt_suffix}".strip()
 
         estimated_context_tokens = self.count_tokens(joined_chunks)

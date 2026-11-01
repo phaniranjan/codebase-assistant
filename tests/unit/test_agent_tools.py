@@ -1,9 +1,9 @@
 """Unit tests for ToolRegistry and tool implementations."""
 
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.agent.models import ToolCall, ToolType
 from codebase_assistant.agent.permissions import PermissionEngine
@@ -42,7 +42,9 @@ class TestToolRegistry(unittest.TestCase):
             encoding="utf-8",
         )
 
-        (self.repo_dir / "requirements.txt").write_text("pytest>=7.0.0\nclick>=8.0.0\n", encoding="utf-8")
+        (self.repo_dir / "requirements.txt").write_text(
+            "pytest>=7.0.0\nclick>=8.0.0\n", encoding="utf-8"
+        )
 
         # Indexing and Retriever
         self.cache_dir = Path(tempfile.mkdtemp())
@@ -112,7 +114,10 @@ class TestToolRegistry(unittest.TestCase):
         self.assertIn("1: def add", res1.output)
 
         # Line range
-        call2 = ToolCall(tool_name="read_source_file", arguments={"file_path": "src/calc.py", "start_line": 3, "end_line": 5})
+        call2 = ToolCall(
+            tool_name="read_source_file",
+            arguments={"file_path": "src/calc.py", "start_line": 3, "end_line": 5},
+        )
         res2 = self.registry.execute_tool(call2)
         self.assertTrue(res2.success)
         self.assertIn("def sub", res2.output)
@@ -138,7 +143,10 @@ class TestToolRegistry(unittest.TestCase):
         self.assertIn("pytest>=7.0.0", res.output)
 
     def test_generate_code_proposal(self):
-        call = ToolCall(tool_name="generate_code_proposal", arguments={"task": "Add multiply function", "target_file": "src/calc.py"})
+        call = ToolCall(
+            tool_name="generate_code_proposal",
+            arguments={"task": "Add multiply function", "target_file": "src/calc.py"},
+        )
         res = self.registry.execute_tool(call)
         self.assertTrue(res.success)
         self.assertIn("Code proposal generated", res.output)
@@ -147,7 +155,9 @@ class TestToolRegistry(unittest.TestCase):
         self.assertEqual(len(self.registry.collected_proposals), 1)
 
     def test_generate_test_proposal(self):
-        call = ToolCall(tool_name="generate_test_proposal", arguments={"source_file": "src/calc.py"})
+        call = ToolCall(
+            tool_name="generate_test_proposal", arguments={"source_file": "src/calc.py"}
+        )
         res = self.registry.execute_tool(call)
         self.assertTrue(res.success)
         self.assertIn("Test proposal generated", res.output)
@@ -199,13 +209,7 @@ class TestToolRegistry(unittest.TestCase):
         denying_engine = PermissionEngine(approval_callback=lambda req: False)
         self.registry.permission_engine = denying_engine
 
-        diff = (
-            "--- a/src/calc.py\n"
-            "+++ b/src/calc.py\n"
-            "@@ -1,1 +1,1 @@\n"
-            "-x\n"
-            "+y\n"
-        )
+        diff = "--- a/src/calc.py\n" "+++ b/src/calc.py\n" "@@ -1,1 +1,1 @@\n" "-x\n" "+y\n"
         call = ToolCall(tool_name="apply_patch", arguments={"unified_diff": diff})
         res = self.registry.execute_tool(call)
         self.assertFalse(res.success)
@@ -254,7 +258,9 @@ class TestToolRegistry(unittest.TestCase):
 
         # Confirm target repository was NOT mutated by tests executed in the disposable sandbox
         artifact = self.repo_dir / "sandbox_artifact.txt"
-        self.assertFalse(artifact.exists(), "Disposable sandbox failed: side effect leaked into repo directory!")
+        self.assertFalse(
+            artifact.exists(), "Disposable sandbox failed: side effect leaked into repo directory!"
+        )
 
     def test_apply_patch_multi_file_atomic_success(self):
         multi_diff = (

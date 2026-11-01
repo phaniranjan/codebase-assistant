@@ -1,8 +1,8 @@
 """Unit tests for incremental indexer and change detection."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.ingestion.indexer import IncrementalIndexer
 
@@ -72,7 +72,8 @@ class TestIncrementalIndexer(unittest.TestCase):
         # Verify old chunk was replaced
         chunks = indexer.load_chunks()
         func_symbols = [
-            c.symbol_name for c in chunks.values()
+            c.symbol_name
+            for c in chunks.values()
             if c.file_path == "src/alpha.py" and c.chunk_type.value == "function"
         ]
         self.assertIn("alpha_v2", func_symbols)
@@ -166,7 +167,9 @@ class TestIncrementalIndexer(unittest.TestCase):
 
         report = indexer.index()
         self.assertIn("src/alpha.py", report.failed_files)
-        self.assertIn("Simulated unrecoverable AST parser crash", report.failed_files["src/alpha.py"])
+        self.assertIn(
+            "Simulated unrecoverable AST parser crash", report.failed_files["src/alpha.py"]
+        )
 
         # Ensure old alpha chunks were purged and no stale chunks appear current
         chunks = indexer.load_chunks()

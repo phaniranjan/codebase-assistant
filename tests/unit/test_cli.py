@@ -1,9 +1,9 @@
 """Unit tests for Codebase Assistant CLI commands."""
 
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -66,7 +66,14 @@ class TestCLI(unittest.TestCase):
         # 2. Option --repo-path
         res_opt = self.runner.invoke(
             main,
-            ["ask", "How does authenticate work?", "--repo-path", str(self.repo_dir), "--provider", "mock"],
+            [
+                "ask",
+                "How does authenticate work?",
+                "--repo-path",
+                str(self.repo_dir),
+                "--provider",
+                "mock",
+            ],
         )
         self.assertEqual(res_opt.exit_code, 0, res_opt.output)
         self.assertIn("auth.py", res_opt.output)
@@ -74,7 +81,14 @@ class TestCLI(unittest.TestCase):
     def test_ask_stream_mode(self):
         res = self.runner.invoke(
             main,
-            ["ask", "How does authenticate work?", str(self.repo_dir), "--provider", "mock", "--stream"],
+            [
+                "ask",
+                "How does authenticate work?",
+                str(self.repo_dir),
+                "--provider",
+                "mock",
+                "--stream",
+            ],
         )
         self.assertEqual(res.exit_code, 0, res.output)
         self.assertIn("Answer:", res.output)
@@ -122,7 +136,14 @@ class TestCLI(unittest.TestCase):
             # 2. search command with --allow-fallback
             res_search = self.runner.invoke(
                 main,
-                ["search", "authenticate", str(self.repo_dir), "--provider", "gemini", "--allow-fallback"],
+                [
+                    "search",
+                    "authenticate",
+                    str(self.repo_dir),
+                    "--provider",
+                    "gemini",
+                    "--allow-fallback",
+                ],
             )
             self.assertEqual(res_search.exit_code, 0)
             self.assertIn("Falling back to MockEmbeddingProvider", res_search.output)
@@ -130,7 +151,14 @@ class TestCLI(unittest.TestCase):
             # 3. ask command with --allow-fallback
             res_ask = self.runner.invoke(
                 main,
-                ["ask", "test question", str(self.repo_dir), "--provider", "gemini", "--allow-fallback"],
+                [
+                    "ask",
+                    "test question",
+                    str(self.repo_dir),
+                    "--provider",
+                    "gemini",
+                    "--allow-fallback",
+                ],
             )
             self.assertEqual(res_ask.exit_code, 0)
             self.assertIn("Falling back to Mock providers", res_ask.output)
@@ -138,7 +166,8 @@ class TestCLI(unittest.TestCase):
     def test_evaluate_cli_command_offline_and_reports(self):
         # Create a small sample dataset JSON
         sample_dataset = self.repo_dir / "test_dataset.json"
-        sample_dataset.write_text("""{
+        sample_dataset.write_text(
+            """{
   "version": "1.0.0",
   "target_repository": "test-repo",
   "cases": [
@@ -151,7 +180,9 @@ class TestCLI(unittest.TestCase):
       "expected_symbols": ["authenticate_user"]
     }
   ]
-}""", encoding="utf-8")
+}""",
+            encoding="utf-8",
+        )
 
         external_out_dir = Path(tempfile.mkdtemp())
         json_out = external_out_dir / "report.json"
@@ -163,11 +194,18 @@ class TestCLI(unittest.TestCase):
                 [
                     "evaluate",
                     str(self.repo_dir),
-                    "--dataset", str(sample_dataset),
-                    "--mode", "hybrid",
-                    "--top-k", "2",
-                    "--output-json", str(json_out),
-                    "--output-markdown", str(md_out),
+                    "--dataset",
+                    str(sample_dataset),
+                    "--mode",
+                    "hybrid",
+                    "--top-k",
+                    "2",
+                    "--cache-dir",
+                    str(external_out_dir / "eval_cache"),
+                    "--output-json",
+                    str(json_out),
+                    "--output-markdown",
+                    str(md_out),
                 ],
             )
             self.assertEqual(res.exit_code, 0, res.output)
@@ -176,6 +214,7 @@ class TestCLI(unittest.TestCase):
             self.assertTrue(md_out.is_file())
         finally:
             import shutil
+
             shutil.rmtree(external_out_dir, ignore_errors=True)
 
     def test_evaluate_cli_rejects_internal_cache_dir(self):
@@ -188,8 +227,10 @@ class TestCLI(unittest.TestCase):
             [
                 "evaluate",
                 str(self.repo_dir),
-                "--dataset", str(sample_dataset),
-                "--cache-dir", str(internal_cache),
+                "--dataset",
+                str(sample_dataset),
+                "--cache-dir",
+                str(internal_cache),
             ],
         )
         self.assertEqual(res.exit_code, 1)
@@ -197,7 +238,7 @@ class TestCLI(unittest.TestCase):
 
     def test_evaluate_cli_live_fails_without_key(self):
         sample_dataset = self.repo_dir / "test_dataset.json"
-        sample_dataset.write_text("{\"cases\": []}", encoding="utf-8")
+        sample_dataset.write_text('{"cases": []}', encoding="utf-8")
 
         with patch.dict(os.environ, {}, clear=True):
             res = self.runner.invoke(

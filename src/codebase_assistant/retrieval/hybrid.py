@@ -84,7 +84,9 @@ class HybridRetriever:
         elif mode == "hybrid":
             return self._search_hybrid(query, top_k)
         else:
-            raise ValueError(f"Unknown search mode: '{mode}'. Expected 'hybrid', 'dense_only', or 'sparse_only'.")
+            raise ValueError(
+                f"Unknown search mode: '{mode}'. Expected 'hybrid', 'dense_only', or 'sparse_only'."
+            )
 
     def _search_sparse_only(self, query: str, top_k: int) -> List[SearchResult]:
         """Perform sparse BM25 keyword search."""
@@ -130,13 +132,17 @@ class HybridRetriever:
 
         # 1. Sparse BM25
         sparse_hits = self.bm25.search(query, top_k=candidate_k)
-        sparse_ranks: Dict[str, int] = {cid: rank for rank, (cid, _) in enumerate(sparse_hits, start=1)}
+        sparse_ranks: Dict[str, int] = {
+            cid: rank for rank, (cid, _) in enumerate(sparse_hits, start=1)
+        }
         sparse_scores: Dict[str, float] = {cid: score for cid, score in sparse_hits}
 
         # 2. Dense Vector Search
         query_vec = self.embedding_provider.embed_text(query)
         dense_hits = self.vector_store.search(query_vec, top_k=candidate_k)
-        dense_ranks: Dict[str, int] = {cid: rank for rank, (cid, _) in enumerate(dense_hits, start=1)}
+        dense_ranks: Dict[str, int] = {
+            cid: rank for rank, (cid, _) in enumerate(dense_hits, start=1)
+        }
         dense_scores: Dict[str, float] = {cid: score for cid, score in dense_hits}
 
         all_candidate_ids: Set[str] = set(sparse_ranks.keys()) | set(dense_ranks.keys())

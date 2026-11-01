@@ -1,7 +1,7 @@
 """Okapi BM25 sparse keyword retriever tailored for source code."""
 
-from collections import Counter, defaultdict
 import math
+from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Tuple
 
 from codebase_assistant.ingestion.models import CodeChunk
@@ -113,7 +113,9 @@ class BM25Retriever:
                 doc_len = self.doc_lengths.get(doc_id, self.avg_doc_len)
                 # BM25 term score component
                 numerator = tf * (self.k1 + 1.0)
-                denominator = tf + self.k1 * (1.0 - self.b + self.b * (doc_len / (self.avg_doc_len or 1.0)))
+                denominator = tf + self.k1 * (
+                    1.0 - self.b + self.b * (doc_len / (self.avg_doc_len or 1.0))
+                )
                 scores[doc_id] += idf * (numerator / denominator)
 
         # Sort by score descending

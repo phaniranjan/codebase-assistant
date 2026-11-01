@@ -1,12 +1,12 @@
 """Incremental indexer tracking source revisions, file hashes, and stale chunk removal."""
 
-from datetime import datetime, timezone
 import hashlib
 import json
 import logging
 import os
-from pathlib import Path
 import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
@@ -42,10 +42,7 @@ class IndexingReport(BaseModel):
     def is_fresh(self) -> bool:
         """Return True if no files were added, modified, deleted, or failed."""
         return not (
-            self.added_files
-            or self.modified_files
-            or self.deleted_files
-            or self.failed_files
+            self.added_files or self.modified_files or self.deleted_files or self.failed_files
         )
 
 
@@ -63,7 +60,9 @@ class IncrementalIndexer:
         settings = get_settings()
         if cache_dir is not None:
             c = Path(cache_dir)
-            self.cache_dir = (self.repository_path / c).resolve() if not c.is_absolute() else c.resolve()
+            self.cache_dir = (
+                (self.repository_path / c).resolve() if not c.is_absolute() else c.resolve()
+            )
         else:
             self.cache_dir = (self.repository_path / settings.cache_dir).resolve()
         self.manifest_path = self.cache_dir / "manifest.json"
@@ -115,11 +114,18 @@ class IncrementalIndexer:
 
             return manifest
         except Exception as e:
-            logger.warning("Could not read index manifest at %s: %s. Starting fresh.", self.manifest_path, e)
+            logger.warning(
+                "Could not read index manifest at %s: %s. Starting fresh.", self.manifest_path, e
+            )
             return None
 
     def load_chunks(self) -> Dict[str, CodeChunk]:
         """Load stored chunks from local cache."""
+        manifest = self.load_manifest()
+        if manifest is None and self.manifest_path.is_file():
+            # Mismatched repository or corrupt manifest; invalidate chunks to avoid cross-repo pollution
+            return {}
+
         try:
             if not self.chunks_path.is_file():
                 return {}

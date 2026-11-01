@@ -1,6 +1,7 @@
 """Data models for LLM interactions, citations, and repository question answering."""
 
 from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 

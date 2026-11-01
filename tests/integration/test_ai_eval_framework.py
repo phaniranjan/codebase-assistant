@@ -2,9 +2,9 @@
 
 import hashlib
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.evaluation.dataset import GoldenDataset
 from codebase_assistant.evaluation.report import EvaluationReporter
@@ -71,7 +71,9 @@ class TestAiEvalFrameworkIntegration(unittest.TestCase):
 
     def test_offline_golden_dataset_evaluation_and_hard_gates(self):
         dataset_path = Path("data/golden_dataset.json")
-        self.assertTrue(dataset_path.is_file(), "Golden dataset missing at data/golden_dataset.json")
+        self.assertTrue(
+            dataset_path.is_file(), "Golden dataset missing at data/golden_dataset.json"
+        )
         dataset = GoldenDataset.load_from_file(dataset_path)
 
         runner = EvaluationRunner(

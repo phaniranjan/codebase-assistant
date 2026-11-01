@@ -1,8 +1,8 @@
 """Unit tests for TestProposalGenerator."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.embeddings.manager import EmbeddingManager
 from codebase_assistant.embeddings.mock import MockEmbeddingProvider
@@ -57,6 +57,7 @@ class TestTestProposalGenerator(unittest.TestCase):
     def tearDown(self):
         self.tmp_dir.cleanup()
         import shutil
+
         shutil.rmtree(self.cache_dir, ignore_errors=True)
 
     def test_framework_detection_and_target_file(self):

@@ -1,9 +1,9 @@
 """Gemini LLM client integration using official google-genai SDK."""
 
-from abc import ABC, abstractmethod
 import logging
 import math
-from typing import Iterator, Optional
+from abc import ABC, abstractmethod
+from typing import Any, Iterator, Optional
 
 from codebase_assistant.config import get_settings
 from codebase_assistant.llm.models import LLMResponse
@@ -61,7 +61,7 @@ class GeminiClient(BaseLLMClient):
         settings = get_settings()
         self._api_key = api_key or settings.gemini_api_key
         self._model_name = model_name or settings.gemini_model or "gemini-2.5-flash"
-        self._client = None
+        self._client: Any = None
 
     def _get_client(self):
         """Lazily initialize google-genai Client."""
@@ -74,6 +74,7 @@ class GeminiClient(BaseLLMClient):
                 )
             try:
                 from google import genai
+
                 self._client = genai.Client(api_key=self._api_key)
             except ImportError as e:
                 raise ImportError(

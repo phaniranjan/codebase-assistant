@@ -33,7 +33,9 @@ class TestGroundedPromptBuilder(unittest.TestCase):
 
     def test_build_grounded_prompt(self):
         formatted_context = "### [Reference 1] `src/parser.py` (lines 10-20, symbol: `parse_ast`)\n```python\ncode\n```"
-        prompt = GroundedPromptBuilder.build_grounded_prompt("How does parse_ast work?", formatted_context)
+        prompt = GroundedPromptBuilder.build_grounded_prompt(
+            "How does parse_ast work?", formatted_context
+        )
 
         self.assertIn("<UNTRUSTED_REPOSITORY_CONTEXT>", prompt)
         self.assertIn("</UNTRUSTED_REPOSITORY_CONTEXT>", prompt)

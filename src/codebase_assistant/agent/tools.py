@@ -3,11 +3,11 @@
 import json
 import logging
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from codebase_assistant.agent.models import (
@@ -137,8 +137,15 @@ class ToolRegistry:
                 parameters={
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Natural language query or code symbol to search."},
-                        "top_k": {"type": "integer", "description": "Number of chunks to return (default: 5).", "default": 5},
+                        "query": {
+                            "type": "string",
+                            "description": "Natural language query or code symbol to search.",
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of chunks to return (default: 5).",
+                            "default": 5,
+                        },
                     },
                     "required": ["query"],
                 },
@@ -156,9 +163,18 @@ class ToolRegistry:
                 parameters={
                     "type": "object",
                     "properties": {
-                        "file_path": {"type": "string", "description": "Relative file path inside the repository."},
-                        "start_line": {"type": "integer", "description": "Optional 1-based start line."},
-                        "end_line": {"type": "integer", "description": "Optional 1-based end line."},
+                        "file_path": {
+                            "type": "string",
+                            "description": "Relative file path inside the repository.",
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "description": "Optional 1-based start line.",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "description": "Optional 1-based end line.",
+                        },
                     },
                     "required": ["file_path"],
                 },
@@ -176,7 +192,10 @@ class ToolRegistry:
                 parameters={
                     "type": "object",
                     "properties": {
-                        "symbol_or_path": {"type": "string", "description": "Source file path or symbol name to find tests for."},
+                        "symbol_or_path": {
+                            "type": "string",
+                            "description": "Source file path or symbol name to find tests for.",
+                        },
                     },
                     "required": ["symbol_or_path"],
                 },
@@ -206,8 +225,14 @@ class ToolRegistry:
                 parameters={
                     "type": "object",
                     "properties": {
-                        "task": {"type": "string", "description": "Specific code modification or creation task."},
-                        "target_file": {"type": "string", "description": "Relative path of file to create or modify."},
+                        "task": {
+                            "type": "string",
+                            "description": "Specific code modification or creation task.",
+                        },
+                        "target_file": {
+                            "type": "string",
+                            "description": "Relative path of file to create or modify.",
+                        },
                     },
                     "required": ["task"],
                 },
@@ -225,8 +250,14 @@ class ToolRegistry:
                 parameters={
                     "type": "object",
                     "properties": {
-                        "source_file": {"type": "string", "description": "Source file path to generate unit tests for."},
-                        "framework": {"type": "string", "description": "Optional test framework ('pytest' or 'unittest')."},
+                        "source_file": {
+                            "type": "string",
+                            "description": "Source file path to generate unit tests for.",
+                        },
+                        "framework": {
+                            "type": "string",
+                            "description": "Optional test framework ('pytest' or 'unittest').",
+                        },
                     },
                     "required": ["source_file"],
                 },
@@ -244,7 +275,10 @@ class ToolRegistry:
                 parameters={
                     "type": "object",
                     "properties": {
-                        "command": {"type": "string", "description": "Test command to execute (e.g., 'pytest tests/test_calc.py')."},
+                        "command": {
+                            "type": "string",
+                            "description": "Test command to execute (e.g., 'pytest tests/test_calc.py').",
+                        },
                     },
                     "required": ["command"],
                 },
@@ -262,7 +296,10 @@ class ToolRegistry:
                 parameters={
                     "type": "object",
                     "properties": {
-                        "unified_diff": {"type": "string", "description": "Standard git-compatible unified diff string to apply."},
+                        "unified_diff": {
+                            "type": "string",
+                            "description": "Standard git-compatible unified diff string to apply.",
+                        },
                     },
                     "required": ["unified_diff"],
                 },
@@ -311,9 +348,11 @@ class ToolRegistry:
         if start_line is not None or end_line is not None:
             s = max(1, int(start_line)) if start_line is not None else 1
             e = min(len(lines), int(end_line)) if end_line is not None else len(lines)
-            selected = lines[s - 1:e]
+            selected = lines[s - 1 : e]
             numbered = [f"{s + idx}: {line}" for idx, line in enumerate(selected)]
-            return f"--- File: {file_path} (lines {s}-{e} of {len(lines)}) ---\n" + "\n".join(numbered)
+            return f"--- File: {file_path} (lines {s}-{e} of {len(lines)}) ---\n" + "\n".join(
+                numbered
+            )
 
         # Full file up to 200 lines
         max_lines = 200
@@ -347,17 +386,28 @@ class ToolRegistry:
         if not test_files:
             return f"No existing test files found matching '{query}'."
 
-        return f"Found {len(test_files)} related test file(s):\n" + "\n".join(f"  • {f}" for f in test_files[:10])
+        return f"Found {len(test_files)} related test file(s):\n" + "\n".join(
+            f"  • {f}" for f in test_files[:10]
+        )
 
     def _handle_inspect_dependencies(self, args: Dict[str, Any]) -> str:
-        manifest_names = ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile", "environment.yml"]
+        manifest_names = [
+            "pyproject.toml",
+            "requirements.txt",
+            "setup.py",
+            "Pipfile",
+            "environment.yml",
+        ]
         found_manifests = []
 
         for name in manifest_names:
             try:
                 validated_path = self.policy_engine.validate_file_access(name)
             except SecurityPolicyError:
-                logger.warning("Manifest '%s' violates workspace boundary or escapes via symlink; skipping.", name)
+                logger.warning(
+                    "Manifest '%s' violates workspace boundary or escapes via symlink; skipping.",
+                    name,
+                )
                 continue
 
             if validated_path.is_file():
@@ -451,7 +501,14 @@ class ToolRegistry:
                 ignored: set[str] = set()
                 dir_path = Path(directory)
                 for name in contents:
-                    if name in (".git", "__pycache__", ".pytest_cache", ".venv", "venv", ".mypy_cache"):
+                    if name in (
+                        ".git",
+                        "__pycache__",
+                        ".pytest_cache",
+                        ".venv",
+                        "venv",
+                        ".mypy_cache",
+                    ):
                         ignored.add(name)
                     elif name.endswith(".pyc"):
                         ignored.add(name)
@@ -465,7 +522,9 @@ class ToolRegistry:
                                 ignored.add(name)
                 return ignored
 
-            shutil.copytree(self.repository_path, sandbox_repo, ignore=_ignore_filter, symlinks=False)
+            shutil.copytree(
+                self.repository_path, sandbox_repo, ignore=_ignore_filter, symlinks=False
+            )
 
             # Map any arguments referencing the repository path into the disposable sandbox
             remapped_cmd: List[str] = []
@@ -494,7 +553,8 @@ class ToolRegistry:
 
             existing_pythonpath = clean_env.get("PYTHONPATH", "")
             filtered_pp = [
-                entry for entry in existing_pythonpath.split(os.pathsep)
+                entry
+                for entry in existing_pythonpath.split(os.pathsep)
                 if entry and not entry.startswith(str(self.repository_path))
             ]
             clean_env["PYTHONPATH"] = os.pathsep.join(
@@ -590,9 +650,7 @@ class ToolRegistry:
             abs_target = self.policy_engine.validate_file_access(rel_file)
             existed = abs_target.is_file()
             orig_content = (
-                abs_target.read_text(encoding="utf-8", errors="replace")
-                if existed
-                else ""
+                abs_target.read_text(encoding="utf-8", errors="replace") if existed else ""
             )
 
             # Dry-run patch in memory
@@ -603,9 +661,13 @@ class ToolRegistry:
 
             # AST verify Python files deterministically
             if abs_target.suffix == ".py":
-                is_valid, errors = DiffEngine.validate_ast_syntax(patched_content, filename=rel_file)
+                is_valid, errors = DiffEngine.validate_ast_syntax(
+                    patched_content, filename=rel_file
+                )
                 if not is_valid:
-                    raise ValueError(f"Patched code for '{rel_file}' failed AST validation: {'; '.join(errors)}")
+                    raise ValueError(
+                        f"Patched code for '{rel_file}' failed AST validation: {'; '.join(errors)}"
+                    )
 
             prepared_updates.append((rel_file, abs_target, orig_content, patched_content, existed))
 

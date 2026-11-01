@@ -42,8 +42,14 @@ class TestLogicalChunker(unittest.TestCase):
 
     def test_chunk_subdivision_for_large_symbols(self):
         # Create a large symbol exceeding max_chunk_chars (500 chars)
-        large_lines = [f"    # Line {i} with some descriptive comments filling space" for i in range(50)]
-        large_code = "def large_handler():\n    '''Handler docstring.'''\n" + "\n".join(large_lines) + "\n    return True\n"
+        large_lines = [
+            f"    # Line {i} with some descriptive comments filling space" for i in range(50)
+        ]
+        large_code = (
+            "def large_handler():\n    '''Handler docstring.'''\n"
+            + "\n".join(large_lines)
+            + "\n    return True\n"
+        )
 
         small_chunker = LogicalChunker(max_chunk_chars=300, chunk_overlap_lines=5)
         chunks = small_chunker.chunk_file(

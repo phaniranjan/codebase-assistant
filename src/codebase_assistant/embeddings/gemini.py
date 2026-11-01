@@ -2,7 +2,7 @@
 
 import logging
 import math
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from codebase_assistant.config import get_settings
 from codebase_assistant.embeddings.base import BaseEmbeddingProvider
@@ -24,7 +24,7 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
         self._model_name = model_name or settings.gemini_embedding_model or "gemini-embedding-001"
         self._dimension = dimension or 768
 
-        self._client = None
+        self._client: Any = None
 
     def _get_client(self):
         """Lazily initialize and return the google-genai Client."""
@@ -37,6 +37,7 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
                 )
             try:
                 from google import genai
+
                 self._client = genai.Client(api_key=self._api_key)
             except ImportError as e:
                 raise ImportError(
@@ -97,7 +98,9 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
                         vals = list(emb.values) if hasattr(emb, "values") else list(emb)
                         all_embeddings.append(self._normalize(vals))
                 else:
-                    logger.warning("No embeddings returned by Gemini API for batch starting at %d", i)
+                    logger.warning(
+                        "No embeddings returned by Gemini API for batch starting at %d", i
+                    )
                     for _ in chunk:
                         all_embeddings.append([0.0] * self._dimension)
             except Exception as e:

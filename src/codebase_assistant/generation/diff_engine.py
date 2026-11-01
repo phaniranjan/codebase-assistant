@@ -2,9 +2,9 @@
 
 import ast
 import difflib
-from pathlib import Path
 import re
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import Any, List, Optional, Tuple
 
 
 def normalize_rel_path(path_str: str) -> str:
@@ -53,7 +53,9 @@ class DiffEngine:
         # Disallow raw parent references in unnormalized input
         raw_parts = Path(target_file).parts
         if ".." in raw_parts:
-            raise ValueError(f"Path traversal detected: '{target_file}' attempts to navigate outside repository.")
+            raise ValueError(
+                f"Path traversal detected: '{target_file}' attempts to navigate outside repository."
+            )
 
         # Check for absolute or root-anchored paths (e.g. /path or \path or C:\path)
         target_p = Path(target_file)
@@ -65,17 +67,23 @@ class DiffEngine:
                 resolved_abs.relative_to(repo)
                 target = resolved_abs
             except ValueError:
-                raise ValueError(f"Path security violation: Absolute path '{target_file}' resolves outside repository boundary '{repo}'.")
+                raise ValueError(
+                    f"Path security violation: Absolute path '{target_file}' resolves outside repository boundary '{repo}'."
+                )
         else:
             norm = normalize_rel_path(target_file)
             if ".." in Path(norm).parts:
-                raise ValueError(f"Path traversal detected: '{target_file}' attempts to navigate outside repository.")
+                raise ValueError(
+                    f"Path traversal detected: '{target_file}' attempts to navigate outside repository."
+                )
             target = (repo / norm).resolve()
 
         try:
             target.relative_to(repo)
         except ValueError:
-            raise ValueError(f"Path traversal or symlink escape detected: '{target}' resolves outside repository boundary '{repo}'.")
+            raise ValueError(
+                f"Path traversal or symlink escape detected: '{target}' resolves outside repository boundary '{repo}'."
+            )
 
         return target
 
@@ -124,11 +132,13 @@ class DiffEngine:
         # Check if this patch creates a new file from /dev/null
         is_new_file = any(line.startswith("--- /dev/null") for line in diff_lines[:5])
         if is_new_file and original_content.strip():
-            raise ValueError("Cannot apply new-file patch (--- /dev/null) to non-empty original content")
+            raise ValueError(
+                "Cannot apply new-file patch (--- /dev/null) to non-empty original content"
+            )
 
         hunk_header_re = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-        hunks = []
-        current_hunk = None
+        hunks: list[dict[str, Any]] = []
+        current_hunk: Optional[dict[str, Any]] = None
 
         for line_num, line in enumerate(diff_lines, start=1):
             if line.startswith("@@"):

@@ -170,12 +170,16 @@ class TestMetricsCalculator(unittest.TestCase):
         self.assertEqual(m_tp.classification, "TP")
 
         # 2. FN: Answerable question erroneously refused (unnecessary abstention)
-        m_fn = MetricsCalculator.evaluate_abstention("The context does not contain sufficient details.", ans_case)
+        m_fn = MetricsCalculator.evaluate_abstention(
+            "The context does not contain sufficient details.", ans_case
+        )
         self.assertEqual(m_fn.classification, "FN")
         self.assertTrue(m_fn.is_unnecessary_abstention)
 
         # 3. TN: Unanswerable question correctly refused
-        m_tn = MetricsCalculator.evaluate_abstention("The context does not contain sufficient details.", unans_case)
+        m_tn = MetricsCalculator.evaluate_abstention(
+            "The context does not contain sufficient details.", unans_case
+        )
         self.assertEqual(m_tn.classification, "TN")
         self.assertTrue(m_tn.is_correct_abstention)
 

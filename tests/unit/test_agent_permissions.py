@@ -50,7 +50,9 @@ class TestPermissionEngine(unittest.TestCase):
         auto_engine = PermissionEngine(approval_callback=callback, auto_approve_consequential=True)
         authorized = auto_engine.check_authorization(ToolType.CONSEQUENTIAL, self.request)
         self.assertTrue(authorized)
-        self.assertFalse(called, "Callback should not have been called when auto-approval is enabled.")
+        self.assertFalse(
+            called, "Callback should not have been called when auto-approval is enabled."
+        )
 
 
 if __name__ == "__main__":

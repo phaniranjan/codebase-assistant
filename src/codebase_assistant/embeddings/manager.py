@@ -42,7 +42,10 @@ class EmbeddingManager:
                 try:
                     self.provider = GeminiEmbeddingProvider()
                 except Exception as e:
-                    logger.warning("Could not initialize GeminiEmbeddingProvider: %s. Using MockEmbeddingProvider.", e)
+                    logger.warning(
+                        "Could not initialize GeminiEmbeddingProvider: %s. Using MockEmbeddingProvider.",
+                        e,
+                    )
                     self.provider = MockEmbeddingProvider()
             else:
                 self.provider = MockEmbeddingProvider()
@@ -85,7 +88,9 @@ class EmbeddingManager:
                 self.vector_store.clear()
                 self.vector_store.fingerprint = current_fingerprint
                 self.vector_store.save(self.vector_store_path)
-                logger.info("Evicted %d vectors because repository chunk set is empty.", evicted_count)
+                logger.info(
+                    "Evicted %d vectors because repository chunk set is empty.", evicted_count
+                )
             return {
                 "total_chunks": 0,
                 "embedded_chunks": 0,
@@ -141,20 +146,26 @@ class EmbeddingManager:
                 # Form text to embed: prepend symbol name and file path for enhanced semantic context
                 prefix = f"File: {chunk.file_path}\nSymbol: {chunk.symbol_name}\n\n"
                 texts_to_embed.append(prefix + chunk.content)
-                metadatas_to_embed.append({
-                    "chunk_id": cid,
-                    "file_path": chunk.file_path,
-                    "symbol_name": chunk.symbol_name,
-                    "chunk_type": chunk.chunk_type.value,
-                    "language": chunk.language,
-                    "start_line": chunk.start_line,
-                    "end_line": chunk.end_line,
-                    "content_hash": chunk.content_hash,
-                })
+                metadatas_to_embed.append(
+                    {
+                        "chunk_id": cid,
+                        "file_path": chunk.file_path,
+                        "symbol_name": chunk.symbol_name,
+                        "chunk_type": chunk.chunk_type.value,
+                        "language": chunk.language,
+                        "start_line": chunk.start_line,
+                        "end_line": chunk.end_line,
+                        "content_hash": chunk.content_hash,
+                    }
+                )
 
         # 5. Generate embeddings in batches
         if ids_to_embed:
-            logger.info("Generating embeddings for %d chunks using %s...", len(ids_to_embed), self.provider.model_name)
+            logger.info(
+                "Generating embeddings for %d chunks using %s...",
+                len(ids_to_embed),
+                self.provider.model_name,
+            )
             for i in range(0, len(ids_to_embed), batch_size):
                 batch_ids = ids_to_embed[i : i + batch_size]
                 batch_texts = texts_to_embed[i : i + batch_size]

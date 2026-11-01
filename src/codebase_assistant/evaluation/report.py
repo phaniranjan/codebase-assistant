@@ -46,44 +46,66 @@ class EvaluationReporter:
         for g in report.quality_gate.gate_details:
             g_type = "Hard Gate" if g.is_hard_gate else "Provisional"
             res = "PASSED ✅" if g.passed else "FAILED ❌"
-            thresh_str = f"<= {g.threshold:.2f}" if "unnecessary" in g.gate_name else f">= {g.threshold:.2f}"
+            thresh_str = (
+                f"<= {g.threshold:.2f}" if "unnecessary" in g.gate_name else f">= {g.threshold:.2f}"
+            )
             lines.append(
                 f"| `{g.gate_name}` | {g_type} | `{thresh_str}` | `{g.actual_value:.4f}` | {res} | {g.description} |"
             )
 
         # Macro Metrics Table
-        lines.extend([
-            "",
-            "---",
-            "",
-            "## 2. Macro Aggregate Metrics",
-            "",
-            "| Metric | Score | Explanation |",
-            "| :--- | :---: | :--- |",
-        ])
+        lines.extend(
+            [
+                "",
+                "---",
+                "",
+                "## 2. Macro Aggregate Metrics",
+                "",
+                "| Metric | Score | Explanation |",
+                "| :--- | :---: | :--- |",
+            ]
+        )
 
         m = report.macro_metrics
-        lines.append(f"| **File Recall@{report.top_k}** | `{m.get('file_recall_at_k', 0.0):.4f}` | Expected files retrieved in top-{report.top_k} (answerable queries) |")
-        lines.append(f"| **File MRR** | `{m.get('file_mrr', 0.0):.4f}` | Mean reciprocal rank of first expected relevant file |")
-        lines.append(f"| **File Hit Rate** | `{m.get('file_hit_rate', 0.0):.4f}` | Cases finding at least one relevant file |")
-        lines.append(f"| **Citation Validity Rate** | `{m.get('citation_validity_rate', 0.0):.4f}` | Citations matching actual chunks in assembled context |")
-        lines.append(f"| **Citation Boundary Correctness** | `{m.get('citation_boundary_rate', 0.0):.4f}` | Cited lines strictly within chunk start/end boundaries |")
-        lines.append(f"| **Abstention Recall (TN / (TN+FP))** | `{m.get('abstention_recall', 0.0):.4f}` | Zero hallucination on unanswerable queries |")
-        lines.append(f"| **Unnecessary Abstention Rate (FN / (TP+FN))** | `{m.get('unnecessary_abstention_rate', 0.0):.4f}` | False refusal rate on answerable queries |")
-        lines.append(f"| **Answerability Accuracy** | `{m.get('answerability_accuracy', 0.0):.4f}` | Correct classification of answerability (TP + TN) / Total |")
+        lines.append(
+            f"| **File Recall@{report.top_k}** | `{m.get('file_recall_at_k', 0.0):.4f}` | Expected files retrieved in top-{report.top_k} (answerable queries) |"
+        )
+        lines.append(
+            f"| **File MRR** | `{m.get('file_mrr', 0.0):.4f}` | Mean reciprocal rank of first expected relevant file |"
+        )
+        lines.append(
+            f"| **File Hit Rate** | `{m.get('file_hit_rate', 0.0):.4f}` | Cases finding at least one relevant file |"
+        )
+        lines.append(
+            f"| **Citation Validity Rate** | `{m.get('citation_validity_rate', 0.0):.4f}` | Citations matching actual chunks in assembled context |"
+        )
+        lines.append(
+            f"| **Citation Boundary Correctness** | `{m.get('citation_boundary_rate', 0.0):.4f}` | Cited lines strictly within chunk start/end boundaries |"
+        )
+        lines.append(
+            f"| **Abstention Recall (TN / (TN+FP))** | `{m.get('abstention_recall', 0.0):.4f}` | Zero hallucination on unanswerable queries |"
+        )
+        lines.append(
+            f"| **Unnecessary Abstention Rate (FN / (TP+FN))** | `{m.get('unnecessary_abstention_rate', 0.0):.4f}` | False refusal rate on answerable queries |"
+        )
+        lines.append(
+            f"| **Answerability Accuracy** | `{m.get('answerability_accuracy', 0.0):.4f}` | Correct classification of answerability (TP + TN) / Total |"
+        )
 
         conf = m.get("confusion_matrix", {})
-        lines.extend([
-            "",
-            f"**Abstention Confusion Matrix**: `TP={conf.get('TP', 0)}`, `TN={conf.get('TN', 0)}`, `FP={conf.get('FP', 0)} (Missed Abstentions)`, `FN={conf.get('FN', 0)} (False Refusals)`",
-            "",
-            "---",
-            "",
-            "## 3. Category Breakdown",
-            "",
-            "| Category | Cases | Recall | MRR | Hit Rate | Citation Validity | Abstention Acc | Fact Coverage (Smoke) |",
-            "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
-        ])
+        lines.extend(
+            [
+                "",
+                f"**Abstention Confusion Matrix**: `TP={conf.get('TP', 0)}`, `TN={conf.get('TN', 0)}`, `FP={conf.get('FP', 0)} (Missed Abstentions)`, `FN={conf.get('FN', 0)} (False Refusals)`",
+                "",
+                "---",
+                "",
+                "## 3. Category Breakdown",
+                "",
+                "| Category | Cases | Recall | MRR | Hit Rate | Citation Validity | Abstention Acc | Fact Coverage (Smoke) |",
+                "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+            ]
+        )
 
         for cat_name, cat in report.category_summaries.items():
             rec_str = f"{cat.avg_file_recall:.4f}" if cat.avg_file_recall is not None else "N/A"
@@ -93,13 +115,15 @@ class EvaluationReporter:
 
         # Diagnostic Section: Failures and Skips
         if report.quality_gate.failing_cases:
-            lines.extend([
-                "",
-                "---",
-                "",
-                "## 4. Failing Cases & Diagnostics",
-                "",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "---",
+                    "",
+                    "## 4. Failing Cases & Diagnostics",
+                    "",
+                ]
+            )
             for fc in report.quality_gate.failing_cases:
                 lines.append(f"### Case `{fc['case_id']}` (`{fc['category']}`)")
                 for f_item in fc["failures"]:
@@ -107,15 +131,19 @@ class EvaluationReporter:
                 lines.append("")
 
         if report.quality_gate.skipped_cases:
-            lines.extend([
-                "",
-                "---",
-                "",
-                "## 5. Skipped / Errored Cases",
-                "",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "---",
+                    "",
+                    "## 5. Skipped / Errored Cases",
+                    "",
+                ]
+            )
             for sc in report.quality_gate.skipped_cases:
-                lines.append(f"- Case `{sc.get('case_id', 'unknown')}`: `{sc.get('reason', 'unknown')}`")
+                lines.append(
+                    f"- Case `{sc.get('case_id', 'unknown')}`: `{sc.get('reason', 'unknown')}`"
+                )
 
         return "\n".join(lines) + "\n"
 

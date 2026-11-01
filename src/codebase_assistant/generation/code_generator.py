@@ -1,8 +1,8 @@
 """Context-aware code modification and proposal generator."""
 
 import logging
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import List, Optional
 
 from codebase_assistant.config import get_settings
@@ -30,7 +30,9 @@ class CodeProposalGenerator:
         self.repository_path = Path(repository_path).resolve()
         self.retriever = retriever
         self.llm_client = llm_client or GeminiClient()
-        self.assembler = assembler or ContextAssembler(default_max_tokens=get_settings().max_context_tokens)
+        self.assembler = assembler or ContextAssembler(
+            default_max_tokens=get_settings().max_context_tokens
+        )
 
     def _build_proposal_prompt(
         self,
@@ -40,7 +42,11 @@ class CodeProposalGenerator:
         original_content: str = "",
     ) -> str:
         """Construct a grounded prompt with strict instructions and prompt-injection barriers."""
-        target_clause = f"Target file to modify or create: '{target_file}'." if target_file else "Select the most appropriate file to modify or create based on the codebase context."
+        target_clause = (
+            f"Target file to modify or create: '{target_file}'."
+            if target_file
+            else "Select the most appropriate file to modify or create based on the codebase context."
+        )
 
         target_file_block = ""
         if target_file and original_content:
@@ -144,7 +150,9 @@ Propose the changes now:"""
 
         # 5. Extract Architectural Reasoning and Proposed Code
         reasoning = ""
-        reasoning_match = re.search(r"--- ARCHITECTURAL REASONING ---\s*(.*?)(?=--- FILE:|$)", raw_text, re.DOTALL)
+        reasoning_match = re.search(
+            r"--- ARCHITECTURAL REASONING ---\s*(.*?)(?=--- FILE:|$)", raw_text, re.DOTALL
+        )
         if reasoning_match:
             reasoning = reasoning_match.group(1).strip()
         else:
@@ -225,10 +233,14 @@ Propose the changes now:"""
             else f"Code proposal verification failed: {'; '.join(syntax_errors)}"
         )
 
-        token_usage = {
-            "prompt_tokens": response.prompt_tokens or 0,
-            "completion_tokens": response.completion_tokens or 0,
-        } if response.prompt_tokens is not None else None
+        token_usage = (
+            {
+                "prompt_tokens": response.prompt_tokens or 0,
+                "completion_tokens": response.completion_tokens or 0,
+            }
+            if response.prompt_tokens is not None
+            else None
+        )
 
         return ProposalResult(
             task_description=task,

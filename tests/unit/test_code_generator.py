@@ -1,8 +1,8 @@
 """Unit tests for CodeProposalGenerator."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.embeddings.manager import EmbeddingManager
 from codebase_assistant.embeddings.mock import MockEmbeddingProvider
@@ -53,6 +53,7 @@ class TestCodeProposalGenerator(unittest.TestCase):
     def tearDown(self):
         self.tmp_dir.cleanup()
         import shutil
+
         shutil.rmtree(self.cache_dir, ignore_errors=True)
 
     def test_propose_code_modification_with_ast_validation(self):
@@ -85,7 +86,9 @@ class TestCodeProposalGenerator(unittest.TestCase):
 
         # Verify target repository was NOT modified
         disk_content = self.calc_file.read_text(encoding="utf-8")
-        self.assertEqual(disk_content, self.calc_content, "Target file was directly modified on disk!")
+        self.assertEqual(
+            disk_content, self.calc_content, "Target file was directly modified on disk!"
+        )
 
     def test_propose_new_file(self):
         generator = CodeProposalGenerator(

@@ -18,17 +18,13 @@ class Settings(BaseModel):
     """Application settings with environment variable support."""
 
     # Gemini API Configuration
-    gemini_api_key: Optional[str] = Field(
-        default_factory=lambda: os.getenv("GEMINI_API_KEY")
-    )
+    gemini_api_key: Optional[str] = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     gemini_embedding_api_key: Optional[str] = Field(
         default_factory=lambda: os.getenv("GEMINI_EMBEDDING_API_KEY") or os.getenv("GEMINI_API_KEY")
     )
 
     # Models
-    gemini_model: str = Field(
-        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    )
+    gemini_model: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
     gemini_embedding_model: str = Field(
         default_factory=lambda: os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
     )
@@ -42,9 +38,7 @@ class Settings(BaseModel):
     max_context_tokens: int = Field(
         default_factory=lambda: int(os.getenv("MAX_CONTEXT_TOKENS", "8192"))
     )
-    default_top_k: int = Field(
-        default_factory=lambda: int(os.getenv("DEFAULT_TOP_K", "5"))
-    )
+    default_top_k: int = Field(default_factory=lambda: int(os.getenv("DEFAULT_TOP_K", "5")))
 
     # Agent Limits & Stopping Conditions
     max_tool_calls_per_turn: int = Field(
@@ -57,7 +51,8 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("COMMAND_TIMEOUT_SECONDS", "30"))
     )
     require_confirmation_for_mutations: bool = Field(
-        default_factory=lambda: os.getenv("REQUIRE_CONFIRMATION_FOR_MUTATIONS", "true").lower() in ("true", "1", "yes")
+        default_factory=lambda: os.getenv("REQUIRE_CONFIRMATION_FOR_MUTATIONS", "true").lower()
+        in ("true", "1", "yes")
     )
 
     # Default file exclusion patterns

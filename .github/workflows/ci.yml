@@ -1,0 +1,73 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test & Quality Gate (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Clone external target repository (ai-evaluation)
+        run: |
+          git clone https://github.com/phaniranjan/ai-evaluation.git ../ai-evaluation
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -e ".[ai,dev,eval]"
+
+      - name: Run Black formatting check
+        run: |
+          black --check src tests
+
+      - name: Run isort import sorting check
+        run: |
+          isort --check-only src tests
+
+      - name: Run mypy static type analysis
+        run: |
+          mypy src
+
+      - name: Run full unit test suite
+        run: |
+          pytest tests/unit -v --tb=short
+
+      - name: Run adversarial security test suite
+        run: |
+          pytest tests/unit/test_repair_adversarial.py -v --tb=short
+
+      - name: Execute RAG golden dataset evaluation quality gate
+        run: |
+          mkdir -p reports
+          codebase-assistant evaluate ../ai-evaluation --dataset data/golden_dataset.json --fail-under --output-json reports/eval_report_py${{ matrix.python-version }}.json --output-markdown reports/eval_report_py${{ matrix.python-version }}.md
+
+      - name: Verify target repository immutability
+        run: |
+          cd ../ai-evaluation
+          git status --porcelain
+          test -z "$(git status --porcelain)"
+
+      - name: Upload test and evaluation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-reports-py${{ matrix.python-version }}
+          path: reports/

@@ -1,8 +1,8 @@
 """Integration test validating repository Q&A reasoning against read-only ai-evaluation."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.embeddings.manager import EmbeddingManager
 from codebase_assistant.embeddings.mock import MockEmbeddingProvider

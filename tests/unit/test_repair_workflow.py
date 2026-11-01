@@ -1,9 +1,9 @@
 """Unit tests for RepairWorkflowCoordinator end-to-end task execution and bounded self-repair."""
 
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.agent.permissions import PermissionEngine
 from codebase_assistant.agent.policy import PolicyEngine
@@ -131,13 +131,13 @@ class TestRepairWorkflowCoordinator(unittest.TestCase):
         # Queue responses:
         # 1. Plan response
         plan_json = (
-            '{\n'
+            "{\n"
             '  "analysis": "Fix zero division in div",\n'
             '  "target_files": ["src/calc.py"],\n'
             '  "test_files": ["tests/unit/test_calc.py"],\n'
             '  "steps": ["Apply fix", "Run tests"],\n'
             '  "success_criteria": ["Tests pass"]\n'
-            '}'
+            "}"
         )
         # 2. First proposal doesn't handle zero division (fails test)
         bad_proposal = (

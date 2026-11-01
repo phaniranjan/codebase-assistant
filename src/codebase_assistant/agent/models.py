@@ -3,11 +3,13 @@
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field
 
 
 class ToolType(str, Enum):
     """Classification of agent tool actions."""
+
     READ_ONLY = "read_only"
     PROPOSAL = "proposal"
     CONSEQUENTIAL = "consequential"
@@ -15,6 +17,7 @@ class ToolType(str, Enum):
 
 class ToolDefinition(BaseModel):
     """Specification of an agent-executable tool."""
+
     name: str
     description: str
     parameters: Dict[str, Any] = Field(default_factory=dict)
@@ -32,6 +35,7 @@ class ToolDefinition(BaseModel):
 
 class ToolCall(BaseModel):
     """Structured invocation of a tool requested by the model."""
+
     tool_name: str
     arguments: Dict[str, Any] = Field(default_factory=dict)
     call_id: Optional[str] = None
@@ -39,6 +43,7 @@ class ToolCall(BaseModel):
 
 class ToolResult(BaseModel):
     """Output from executing an agent tool."""
+
     tool_name: str
     success: bool
     output: str
@@ -49,6 +54,7 @@ class ToolResult(BaseModel):
 
 class AuthorizationRequest(BaseModel):
     """Request for interactive developer approval before consequential actions."""
+
     tool_name: str
     arguments: Dict[str, Any] = Field(default_factory=dict)
     action_summary: str
@@ -58,6 +64,7 @@ class AuthorizationRequest(BaseModel):
 
 class AgentStoppingReason(str, Enum):
     """Reason for agent orchestration loop termination."""
+
     COMPLETED = "completed"
     MAX_ITERATIONS = "max_iterations"
     MAX_REASONING_STEPS = "max_reasoning_steps"
@@ -69,6 +76,7 @@ class AgentStoppingReason(str, Enum):
 
 class AgentStep(BaseModel):
     """Single reasoning or execution step in the agent trajectory."""
+
     step_number: int
     thought: str = ""
     tool_call: Optional[ToolCall] = None
@@ -78,6 +86,7 @@ class AgentStep(BaseModel):
 
 class AgentConfig(BaseModel):
     """Configuration governing agent loop safety and execution constraints."""
+
     max_iterations: int = 5
     max_reasoning_steps: int = 10
     command_timeout_seconds: float = 30.0
@@ -88,6 +97,7 @@ class AgentConfig(BaseModel):
 
 class AgentResponse(BaseModel):
     """Final output bundle summarizing agent trajectory and resolution."""
+
     task: str
     final_answer: str
     stopping_reason: AgentStoppingReason

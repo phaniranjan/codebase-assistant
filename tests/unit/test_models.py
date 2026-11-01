@@ -1,6 +1,7 @@
 """Unit tests for ingestion data models."""
 
 import unittest
+
 from codebase_assistant.ingestion.models import (
     ChunkType,
     CodeChunk,
@@ -46,7 +47,9 @@ class TestModels(unittest.TestCase):
     def test_index_manifest_serialization(self):
         manifest = IndexManifest(
             repository_path="/workspace/repo",
-            source_revision=SourceRevision(commit_sha="abcdef", branch="main", revision_id="abcdef"),
+            source_revision=SourceRevision(
+                commit_sha="abcdef", branch="main", revision_id="abcdef"
+            ),
             indexed_at="2026-10-28T22:00:00Z",
             file_count=1,
             chunk_count=1,
