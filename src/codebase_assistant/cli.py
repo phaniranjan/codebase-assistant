@@ -1770,7 +1770,13 @@ def repair(
 
 @main.command()
 @click.option("--mock", is_flag=True, default=False, help="Force offline deterministic mock mode.")
-def mcp(mock: bool):
+@click.option(
+    "--allow-fallback",
+    is_flag=True,
+    default=False,
+    help="Allow fallback to offline mock mode if live Gemini provider fails.",
+)
+def mcp(mock: bool, allow_fallback: bool):
     """Launch the Model Context Protocol (MCP) server for Antigravity integration."""
     import logging
 
@@ -1781,7 +1787,7 @@ def mcp(mock: bool):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         stream=sys.stderr,
     )
-    backend = MCPBackend(is_live=False if mock else None)
+    backend = MCPBackend(is_live=False if mock else None, allow_fallback=allow_fallback)
     server = create_mcp_server(backend=backend)
     server.run(transport="stdio")
 

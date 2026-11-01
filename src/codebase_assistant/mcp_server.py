@@ -3,9 +3,12 @@
 import json
 import logging
 import os
+import re
 import secrets
+import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -48,8 +51,11 @@ logger = logging.getLogger("codebase_assistant.mcp_server")
 class MCPBackend:
     """Encapsulates repository state, caching, retrieval, and agent service instances for MCP."""
 
-    def __init__(self, is_live: Optional[bool] = None) -> None:
+    PROTECTED_REPOS = {"ai-evaluation", "ai_evaluation"}
+
+    def __init__(self, is_live: Optional[bool] = None, allow_fallback: bool = False) -> None:
         self.settings = get_settings()
+        self.allow_fallback = allow_fallback
         self.is_live = (
             is_live
             if is_live is not None
@@ -77,8 +83,8 @@ class MCPBackend:
         self.llm_client: Any = None
         self._init_providers()
 
-        # Consequential action authorization tokens (one-time use)
-        self._pending_authorizations: Dict[str, Dict[str, Any]] = {}
+        # One-time server authorization tokens: token -> (canonical_workspace, expires_at)
+        self._pending_tokens: Dict[str, Tuple[Path, float]] = {}
         self.writable_workspaces: Set[Path] = set()
 
     def _init_providers(self) -> None:
@@ -90,8 +96,13 @@ class MCPBackend:
                 logger.info("MCP server initialized with live Google Gemini providers.")
                 return
             except Exception as e:
+                if not self.allow_fallback:
+                    raise RuntimeError(
+                        f"Failed to initialize live Gemini providers ({e}). "
+                        "Live mode requires valid credentials. Pass allow_fallback=True or --mock to use offline mode."
+                    ) from e
                 logger.warning(
-                    "Failed to initialize live Gemini providers (%s). Falling back to offline mock mode.",
+                    "Failed to initialize live Gemini providers (%s). Falling back to offline mock mode (--allow-fallback is enabled).",
                     e,
                 )
                 self.is_live = False
@@ -99,6 +110,77 @@ class MCPBackend:
         self.emb_provider = MockEmbeddingProvider()
         self.llm_client = MockGeminiClient()
         logger.info("MCP server initialized with offline deterministic mock providers.")
+
+    def is_protected_repository(self, path: Path | str) -> bool:
+        """Check if a path points to or resides within a protected read-only repository."""
+        canonical = Path(path).resolve()
+        real = Path(os.path.realpath(canonical))
+        for check_p in (canonical, real):
+            if check_p.name in self.PROTECTED_REPOS:
+                return True
+            for part in check_p.parts:
+                if part in self.PROTECTED_REPOS:
+                    return True
+        return False
+
+    def is_workspace_authorized(self, target_dir: Path | str) -> bool:
+        """Verify that a workspace is registered, canonical, and not a protected repository."""
+        canonical = Path(target_dir).resolve()
+        real = Path(os.path.realpath(canonical))
+        if canonical != real:
+            logger.warning(
+                "Workspace path resolves to a different realpath: %s != %s", canonical, real
+            )
+            return False
+        if not canonical.is_dir():
+            return False
+        if self.is_protected_repository(canonical):
+            return False
+        return canonical in self.writable_workspaces
+
+    def register_writable_workspace(self, workspace_path: Path | str) -> Path:
+        """Explicitly register a disposable development workspace as writable."""
+        canonical = Path(workspace_path).resolve()
+        real = Path(os.path.realpath(canonical))
+        if canonical != real:
+            raise ValueError(f"Symlink or path mismatch for workspace: {canonical} != {real}")
+        if not canonical.is_dir():
+            raise NotADirectoryError(f"Workspace path is not a directory: {canonical}")
+        if self.is_protected_repository(canonical):
+            raise PermissionError(
+                f"Cannot register protected repository '{canonical}' as writable."
+            )
+        self.writable_workspaces.add(canonical)
+        return canonical
+
+    def unregister_writable_workspace(self, workspace_path: Path | str) -> None:
+        """Remove a workspace from the authorized writable set."""
+        canonical = Path(workspace_path).resolve()
+        self.writable_workspaces.discard(canonical)
+
+    def issue_authorization_token(self, workspace_path: Path | str) -> str:
+        """Issue a cryptographically secure, one-time authorization token for a registered workspace."""
+        canonical = Path(workspace_path).resolve()
+        if not self.is_workspace_authorized(canonical):
+            raise PermissionError(
+                f"Cannot issue authorization token for unauthorized workspace: {canonical}"
+            )
+        token = secrets.token_hex(32)
+        self._pending_tokens[token] = (canonical, time.time() + 60.0)
+        return token
+
+    def verify_and_consume_token(self, token: Optional[str], workspace_path: Path | str) -> bool:
+        """Verify and consume a one-time authorization token."""
+        if not token:
+            return False
+        entry = self._pending_tokens.pop(token, None)
+        if not entry:
+            return False
+        target_ws, expires_at = entry
+        if time.time() > expires_at:
+            return False
+        canonical = Path(workspace_path).resolve()
+        return canonical == target_ws
 
     def set_active_repository(
         self,
@@ -108,10 +190,19 @@ class MCPBackend:
     ) -> Dict[str, Any]:
         """Establish the active repository and initialize indexing and retrieval components."""
         target_path = Path(repository_path).resolve()
+        real_target = Path(os.path.realpath(target_path))
+        if target_path != real_target:
+            raise ValueError(
+                f"Symlink escape or path mismatch detected: {target_path} != {real_target}"
+            )
         if not target_path.exists():
             raise FileNotFoundError(f"Target repository path does not exist: '{target_path}'")
         if not target_path.is_dir():
             raise NotADirectoryError(f"Target repository path is not a directory: '{target_path}'")
+
+        # Protected repository enforcement: protected repos can NEVER be writable
+        if self.is_protected_repository(target_path):
+            writable = False
 
         # Establish cache directory strictly outside the target repository for read-only safety
         if cache_dir:
@@ -137,6 +228,8 @@ class MCPBackend:
         self.is_active_repo_writable = writable
         if writable:
             self.writable_workspaces.add(target_path)
+        else:
+            self.writable_workspaces.discard(target_path)
 
         # 1. Run incremental indexing
         self.indexer = IncrementalIndexer(self.active_repo, cache_dir=self.cache_dir)
@@ -511,8 +604,9 @@ def create_mcp_server(backend: Optional[MCPBackend] = None) -> Any:
             budget: Token budget for context assembly.
         """
         try:
-            be.require_active_repo()
+            repo = be.require_active_repo()
             assert be.code_generator is not None
+            DiffEngine.validate_target_path(repo, target_file)
             proposal = be.code_generator.propose(
                 task=task,
                 target_file=target_file,
@@ -558,10 +652,12 @@ def create_mcp_server(backend: Optional[MCPBackend] = None) -> Any:
             budget: Token budget for context assembly.
         """
         try:
-            be.require_active_repo()
+            repo = be.require_active_repo()
             assert be.test_generator is not None
+            DiffEngine.validate_target_path(repo, target_file)
             proposal = be.test_generator.propose_tests(
                 source_file=target_file,
+                task=task,
                 top_k=top_k,
                 budget=budget,
             )
@@ -596,16 +692,10 @@ def create_mcp_server(backend: Optional[MCPBackend] = None) -> Any:
         try:
             repo = be.require_active_repo()
             assert be.tool_registry is not None
+            if manifest_file:
+                DiffEngine.validate_target_path(repo, manifest_file)
             args = {"manifest_file": manifest_file} if manifest_file else {}
-            res = (
-                be.tool_registry.execute_tool(
-                    tool_call=be.tool_registry.get_tool_definitions()[
-                        3
-                    ],  # inspect_dependencies definition
-                )
-                if False
-                else be.tool_registry._handle_inspect_dependencies(args)
-            )
+            res = be.tool_registry._handle_inspect_dependencies(args)
             return f"### Dependency Manifest Inspection\n\n```\n{res}\n```"
         except Exception as e:
             logger.exception("Error in inspect_dependencies: %s", e)
@@ -688,40 +778,74 @@ def create_mcp_server(backend: Optional[MCPBackend] = None) -> Any:
             workflow_timeout: Cumulative workflow timeout in seconds (default: 180.0).
         """
         try:
-            be.require_active_repo()
-            assert be.repair_coordinator is not None
-            be.repair_coordinator.max_retries = max_retries
-            be.repair_coordinator.max_reasoning_steps = max_steps
-            be.repair_coordinator.token_budget = budget
-            be.repair_coordinator.workflow_timeout_seconds = workflow_timeout
+            repo = be.require_active_repo()
+            assert be.retriever is not None
 
-            report = be.repair_coordinator.run(
-                task=task,
-                test_command=test_command,
-            )
+            # Execute repair strictly inside an isolated disposable workspace
+            with tempfile.TemporaryDirectory(prefix="repair_sandbox_") as sandbox_dir:
+                sandbox_path = Path(sandbox_dir).resolve()
+                shutil.copytree(
+                    repo,
+                    sandbox_path,
+                    dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns(
+                        ".git", ".venv", "__pycache__", ".pytest_cache", ".codebase_assistant"
+                    ),
+                )
 
-            status_icon = (
-                "SUCCESS ✅"
-                if report.status == RepairWorkflowStatus.SUCCESS
-                else f"FAILED ❌ ({report.status.value})"
-            )
-            diff_block = (
-                f"```diff\n{report.final_diff}\n```"
-                if report.final_diff
-                else "*No patch generated or patch was cleanly rolled back.*"
-            )
+                sandbox_policy = PolicyEngine(sandbox_path)
+                sandbox_perm = PermissionEngine(auto_approve_consequential=True)
+                sandbox_code_gen = CodeProposalGenerator(
+                    repository_path=sandbox_path,
+                    retriever=be.retriever,
+                    llm_client=be.llm_client,
+                )
+                sandbox_test_gen = TestProposalGenerator(
+                    repository_path=sandbox_path,
+                    retriever=be.retriever,
+                    llm_client=be.llm_client,
+                )
+                sandbox_repair_coord = RepairWorkflowCoordinator(
+                    repository_path=sandbox_path,
+                    code_generator=sandbox_code_gen,
+                    test_generator=sandbox_test_gen,
+                    retriever=be.retriever,
+                    gemini_client=be.llm_client,
+                    policy_engine=sandbox_policy,
+                    permission_engine=sandbox_perm,
+                    max_retries=max_retries,
+                    max_reasoning_steps=max_steps,
+                    token_budget=budget,
+                    workflow_timeout_seconds=workflow_timeout,
+                )
 
-            return (
-                f"### Repair Workflow Execution Report\n"
-                f"- **Task**: {task}\n"
-                f"- **Test Command**: `{test_command}`\n"
-                f"- **Result**: `{status_icon}`\n"
-                f"- **Attempts**: {report.total_attempts} of {max_retries}\n"
-                f"- **Duration**: {report.total_duration_seconds:.2f}s\n\n"
-                f"#### Architectural Reasoning & Diagnosis\n{report.summary}\n\n"
-                f"#### Final Verified Patch\n{diff_block}\n\n"
-                f"*To apply this patch to a designated writable workspace, use `apply_approved_patch`.*"
-            )
+                report = sandbox_repair_coord.run(
+                    task=task,
+                    test_command=test_command,
+                )
+
+                status_icon = (
+                    "SUCCESS ✅"
+                    if report.status == RepairWorkflowStatus.SUCCESS
+                    else f"FAILED ❌ ({report.status.value})"
+                )
+                diff_block = (
+                    f"```diff\n{report.final_diff}\n```"
+                    if report.final_diff
+                    else "*No patch generated or patch was cleanly rolled back.*"
+                )
+
+                return (
+                    f"### Repair Workflow Execution Report\n"
+                    f"- **Task**: {task}\n"
+                    f"- **Test Command**: `{test_command}`\n"
+                    f"- **Result**: `{status_icon}`\n"
+                    f"- **Attempts**: {report.total_attempts} of {max_retries}\n"
+                    f"- **Duration**: {report.total_duration_seconds:.2f}s\n\n"
+                    f"#### Architectural Reasoning & Diagnosis\n{report.summary}\n\n"
+                    f"#### Final Verified Patch\n{diff_block}\n\n"
+                    f"*To apply this patch to a designated writable workspace, use `apply_approved_patch`.*"
+                )
         except Exception as e:
             logger.exception("Error in repair_code: %s", e)
             return f"Error executing repair workflow: {e}"
@@ -733,121 +857,174 @@ def create_mcp_server(backend: Optional[MCPBackend] = None) -> Any:
     def apply_approved_patch(
         patch_content: str,
         target_workspace: Optional[str] = None,
+        auth_token: Optional[str] = None,
         confirmation: Optional[str] = None,
     ) -> str:
         """Apply a validated unified diff patch to an explicitly designated writable workspace.
 
-        CONSEQUENTIAL TOOL: Requires explicit human confirmation. Target repositories are protected
-        and read-only by default; patches can only be applied if target_workspace is explicitly
-        designated as writable or if confirmation is provided.
+        CONSEQUENTIAL TOOL: Requires explicit human authorization. Target repositories are protected
+        and read-only by default. Over conversational MCP, model-generated confirmations (such as
+        confirmation='CONFIRM_APPLY') cannot authorize direct file modifications on disk.
+        When authorization is missing or unverified, the patch is pre-flight validated and saved
+        externally for manual application via git apply.
 
         Args:
             patch_content: Unified diff text (git diff format).
             target_workspace: Path to the writable development workspace directory.
-            confirmation: Pass 'CONFIRM_APPLY' to confirm intentional application to the designated workspace.
+            auth_token: Optional server-issued one-time authorization token for programmatic application.
+            confirmation: Legacy confirmation parameter (model-generated values cannot bypass authorization).
         """
         try:
-            repo = be.require_active_repo()
-            target_dir = Path(target_workspace).resolve() if target_workspace else repo
+            if target_workspace:
+                target_dir = Path(target_workspace).resolve()
+            else:
+                repo = be.require_active_repo()
+                target_dir = repo.resolve()
+            real_target = Path(os.path.realpath(target_dir))
+            if target_dir != real_target:
+                return f"Error: Symlink escape or path mismatch detected: {target_dir} != {real_target}"
 
-            # Read-only guard: verify that the target directory is explicitly marked writable
-            if target_dir not in be.writable_workspaces and not be.is_active_repo_writable:
+            if not target_dir.is_dir():
+                return f"Error: Target workspace is not a valid directory: '{target_dir}'"
+
+            # 1. Protected repository check: protected repositories can NEVER be modified
+            if be.is_protected_repository(target_dir):
                 return (
-                    f"### Patch Application Denied: Read-Only Repository\n"
-                    f"The repository at `{target_dir}` is treated as a protected read-only knowledge source.\n"
-                    f"To apply patches, specify an explicitly writable workspace via `target_workspace` or "
-                    f"re-activate the repository with `set_active_repository(..., writable=True)`.\n\n"
-                    f"Proposed diff is safe and ready for manual application via standard git:\n"
-                    f"```bash\ngit apply patch.diff\n```"
+                    f"### Patch Application Denied: Protected Repository\n"
+                    f"The repository at `{target_dir}` is a protected knowledge source and is strictly read-only.\n"
+                    f"Modifying files in protected repositories is prohibited by system policy."
                 )
 
-            # Explicit human confirmation requirement
-            if confirmation != "CONFIRM_APPLY":
+            # 2. Authorized workspace check: must be explicitly registered writable workspace
+            if not be.is_workspace_authorized(target_dir):
                 return (
-                    f"### Consequential Action Checkpoint: Human Approval Required\n"
-                    f"You are requesting to modify files on disk in workspace: `{target_dir}`.\n"
-                    f"To proceed, please inspect the patch carefully and call `apply_approved_patch` "
-                    f"with `confirmation='CONFIRM_APPLY'`.\n\n"
-                    f"**Patch Preview:**\n```diff\n{patch_content[:1500]}\n```"
+                    f"### Patch Application Denied: Unauthorized Workspace\n"
+                    f"The directory `{target_dir}` is not a registered writable workspace.\n"
+                    f"Only explicitly registered development workspaces can be modified."
                 )
 
-            # Perform multi-file patch validation and application with atomic rollback
-            tool_reg = be.tool_registry
-            assert tool_reg is not None
+            # 3. Parse multi-file diff
+            try:
+                file_diffs = DiffEngine.split_unified_diff(patch_content)
+            except Exception as split_err:
+                return f"Error parsing unified diff: {split_err}"
 
-            # Backup affected files before writing
-            # Extract affected files from diff headers
-            import re
-
-            from codebase_assistant.agent.repair import RepairWorkflowCoordinator
-
-            affected_headers = re.findall(r"^\+\+\+\s+b/(.*)$", patch_content, re.MULTILINE)
-            if not affected_headers:
+            if not file_diffs:
                 return "Error: Invalid unified diff: No target file headers found ('+++ b/...')."
 
-            # Validate target paths and in-memory dry run
-            backup_state: Dict[Path, Optional[str]] = {}
-            newly_created: List[Path] = []
-            patched_files: List[str] = []
+            # 4. Pre-flight validation on all affected files
+            preflight_state: Dict[Path, Tuple[Optional[str], int, str, str]] = {}
+            # target_path -> (original_text, original_mode, patched_text, rel_file)
 
-            for rel_file in affected_headers:
-                target_path = DiffEngine.validate_target_path(target_dir, rel_file)
-                original_text = ""
+            for rel_file, f_diff in file_diffs:
+                # Reject path traversal
+                if ".." in Path(rel_file).parts or Path(rel_file).is_absolute():
+                    return f"Error: Path traversal attempt rejected in diff header: '{rel_file}'"
+
+                try:
+                    target_path = DiffEngine.validate_target_path(target_dir, rel_file)
+                except ValueError as ve:
+                    return f"Error: Security boundary violation for '{rel_file}': {ve}"
+
+                real_file_path = Path(os.path.realpath(target_path))
+                if target_path.exists() and real_file_path != target_path:
+                    return f"Error: Symlink escape detected for target file: '{target_path}'"
+
+                original_text: Optional[str] = None
+                original_mode: int = 0o644
                 if target_path.exists():
-                    backup_state[target_path] = target_path.read_text(encoding="utf-8")
-                    original_text = backup_state[target_path] or ""
-                else:
-                    backup_state[target_path] = None
-                    newly_created.append(target_path)
+                    original_text = target_path.read_text(encoding="utf-8")
+                    original_mode = target_path.stat().st_mode
 
-                # Dry-run patch in memory
-                patched_text = DiffEngine.apply_diff_in_memory(original_text, patch_content)
+                try:
+                    patched_text = DiffEngine.apply_diff_in_memory(original_text or "", f_diff)
+                except Exception as patch_err:
+                    return f"Error: In-memory dry run failed for '{rel_file}': {patch_err}"
 
-                # AST pre-flight validation
                 if target_path.suffix == ".py":
-                    is_valid, errors = DiffEngine.validate_ast_syntax(
+                    is_valid, syntax_errors = DiffEngine.validate_ast_syntax(
                         patched_text, filename=rel_file
                     )
                     if not is_valid:
-                        return f"Error: Pre-flight AST syntax check failed for '{rel_file}': {'; '.join(errors)}"
+                        return f"Error: Pre-flight AST syntax check failed for '{rel_file}': {'; '.join(syntax_errors)}"
 
-            # Apply all writes atomically with rollback on any failure
-            written_paths: List[Path] = []
+                preflight_state[target_path] = (
+                    original_text,
+                    original_mode,
+                    patched_text,
+                    rel_file,
+                )
+
+            # 5. Check authorization token
+            token_authorized = be.verify_and_consume_token(auth_token, target_dir)
+            if not token_authorized:
+                # Model-generated confirmation ("CONFIRM_APPLY") alone cannot bypass authorization.
+                # Save validated patch externally for safe manual application.
+                patch_dir = (
+                    be.cache_dir / "patches"
+                    if be.cache_dir
+                    else Path(tempfile.gettempdir()) / "codebase_assistant_patches"
+                )
+                patch_dir.mkdir(parents=True, exist_ok=True)
+                saved_patch = patch_dir / f"validated_patch_{secrets.token_hex(4)}.diff"
+                saved_patch.write_text(patch_content, encoding="utf-8")
+
+                file_list = "\n".join(
+                    f"- `{rel_f}`" for _, (_, _, _, rel_f) in preflight_state.items()
+                )
+                return (
+                    f"### Pre-Flight Validation Succeeded: Manual Application Required\n\n"
+                    f"All in-memory patch dry-runs and Python AST syntax checks PASSED for:\n{file_list}\n\n"
+                    f"**Authorization Policy**: Over conversational MCP, model-generated confirmations "
+                    f"cannot authorize direct disk modifications.\n"
+                    f"The pre-flight validated patch has been saved to:\n`{saved_patch}`\n\n"
+                    f"To apply this patch to your workspace, run:\n"
+                    f"```bash\ncd {target_dir} && git apply {saved_patch}\n```"
+                )
+
+            # 6. Authorized programmatic application with atomic rollback
+            written_stack: List[Tuple[Path, Optional[str], int, bool]] = []
+            # (target_path, orig_text, orig_mode, is_new)
             try:
-                for rel_file in affected_headers:
-                    target_path = DiffEngine.validate_target_path(target_dir, rel_file)
-                    original_text = backup_state[target_path] or ""
-                    patched_text = DiffEngine.apply_diff_in_memory(original_text, patch_content)
-
+                for target_path, (
+                    orig_text,
+                    orig_mode,
+                    patched_text,
+                    rel_file,
+                ) in preflight_state.items():
+                    is_new = orig_text is None and not target_path.exists()
                     target_path.parent.mkdir(parents=True, exist_ok=True)
                     target_path.write_text(patched_text, encoding="utf-8")
-                    written_paths.append(target_path)
-                    patched_files.append(rel_file)
+                    written_stack.append((target_path, orig_text, orig_mode, is_new))
             except Exception as write_err:
                 logger.error(
-                    "Multi-file write failure during patch application: %s. Initiating rollback.",
+                    "Write error during patch application: %s. Initiating atomic rollback.",
                     write_err,
                 )
-                # Rollback
                 rollback_errors = []
-                for p, orig in backup_state.items():
+                for target_path, orig_text, orig_mode, is_new in reversed(written_stack):
                     try:
-                        if orig is not None:
-                            p.write_text(orig, encoding="utf-8")
-                        elif p.exists():
-                            p.unlink()
-                    except Exception as rb_err:
-                        rollback_errors.append(f"{p}: {rb_err}")
+                        if not is_new and orig_text is not None:
+                            target_path.write_text(orig_text, encoding="utf-8")
+                            try:
+                                target_path.chmod(orig_mode)
+                            except Exception:
+                                pass
+                        elif is_new and target_path.exists():
+                            target_path.unlink()
+                    except Exception as rb_ex:
+                        rollback_errors.append(f"{target_path}: {rb_ex}")
 
                 if rollback_errors:
                     return f"CRITICAL: ROLLBACK_FAILED after write error ({write_err}): {'; '.join(rollback_errors)}"
                 return f"Error writing patch: {write_err}. Workspace cleanly rolled back to original state."
 
+            patched_names = [rel_f for _, (_, _, _, rel_f) in preflight_state.items()]
             return (
                 f"### Patch Applied Successfully ✅\n"
                 f"- **Target Workspace**: `{target_dir}`\n"
-                f"- **Modified Files ({len(patched_files)})**:\n"
-                + "\n".join(f"  - `{f}`" for f in patched_files)
+                f"- **Modified Files ({len(patched_names)})**:\n"
+                + "\n".join(f"  - `{f}`" for f in patched_names)
                 + f"\n\nAll modified files passed in-memory dry-runs and Python AST syntax checks."
             )
         except Exception as e:
