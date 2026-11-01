@@ -121,6 +121,11 @@ class IncrementalIndexer:
 
     def load_chunks(self) -> Dict[str, CodeChunk]:
         """Load stored chunks from local cache."""
+        manifest = self.load_manifest()
+        if manifest is None and self.manifest_path.is_file():
+            # Mismatched repository or corrupt manifest; invalidate chunks to avoid cross-repo pollution
+            return {}
+
         try:
             if not self.chunks_path.is_file():
                 return {}

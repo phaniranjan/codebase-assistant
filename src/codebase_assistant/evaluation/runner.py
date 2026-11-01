@@ -150,19 +150,23 @@ class EvaluationRunner:
 
         # 1. Load or sync index & vector store
         indexer = IncrementalIndexer(self.repository_path, cache_dir=self.cache_dir)
-        if rebuild_index:
+        manifest = indexer.load_manifest()
+        need_rebuild = rebuild_index or manifest is None
+        if need_rebuild:
             indexer.index(rebuild=True)
-        chunks = indexer.load_chunks()
-        if not chunks:
-            indexer.index()
             chunks = indexer.load_chunks()
+        else:
+            chunks = indexer.load_chunks()
+            if not chunks:
+                indexer.index()
+                chunks = indexer.load_chunks()
 
         manager = EmbeddingManager(
             self.repository_path, cache_dir=self.cache_dir, provider=self.emb_provider
         )
         vector_store = manager.load_vector_store()
-        if mode in ("hybrid", "dense_only") and vector_store.count() == 0:
-            manager.sync(rebuild=rebuild_index)
+        if need_rebuild or (mode in ("hybrid", "dense_only") and vector_store.count() == 0):
+            manager.sync(rebuild=need_rebuild)
             vector_store = manager.load_vector_store()
 
         retriever = HybridRetriever(

@@ -200,6 +200,8 @@ class TestCLI(unittest.TestCase):
                     "hybrid",
                     "--top-k",
                     "2",
+                    "--cache-dir",
+                    str(external_out_dir / "eval_cache"),
                     "--output-json",
                     str(json_out),
                     "--output-markdown",
