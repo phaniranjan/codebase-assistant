@@ -18,6 +18,7 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+console: Any = None
 try:
     from rich.console import Console
     from rich.table import Table
