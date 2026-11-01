@@ -95,7 +95,7 @@ FAISS details.
         self.assertIn("Vector Storage", headings)
 
         overview_sym = next(s for s in symbols if s.name == "Architecture Overview")
-        self.assertIn("print(\"code block with # not treated as heading\")", overview_sym.content)
+        self.assertIn('print("code block with # not treated as heading")', overview_sym.content)
 
     def test_config_parser(self):
         cfg_text = """[project]
@@ -105,7 +105,7 @@ version = "1.0.0"
         symbols = self.cfg_parser.parse_source(cfg_text, file_path="pyproject.toml")
         self.assertEqual(len(symbols), 1)
         self.assertEqual(symbols[0].symbol_type, "config_block")
-        self.assertIn("name = \"demo\"", symbols[0].content)
+        self.assertIn('name = "demo"', symbols[0].content)
 
 
 if __name__ == "__main__":

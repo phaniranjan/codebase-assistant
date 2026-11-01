@@ -94,7 +94,9 @@ class CodebaseQAEngine:
                 try:
                     self.llm_client = GeminiClient()
                 except Exception as e:
-                    logger.warning("Could not initialize GeminiClient (%s). Using MockGeminiClient.", e)
+                    logger.warning(
+                        "Could not initialize GeminiClient (%s). Using MockGeminiClient.", e
+                    )
                     self.llm_client = MockGeminiClient()
             else:
                 self.llm_client = MockGeminiClient()
@@ -154,8 +156,8 @@ class CodebaseQAEngine:
         budget: Optional[int] = None,
     ) -> QAResponse:
         """Answer developer question grounded in retrieved repository source code."""
-        prompt, system_instruction, included_chunks, total_retrieved, is_truncated = self._prepare_prompt(
-            query=query, top_k=top_k, mode=mode, budget=budget
+        prompt, system_instruction, included_chunks, total_retrieved, is_truncated = (
+            self._prepare_prompt(query=query, top_k=top_k, mode=mode, budget=budget)
         )
 
         response = self.llm_client.generate(
@@ -191,8 +193,8 @@ class CodebaseQAEngine:
         on_complete: Optional[Callable[[QAResponse], None]] = None,
     ) -> StreamingQAResponse:
         """Stream answer tokens for developer question with post-stream citation validation."""
-        prompt, system_instruction, included_chunks, total_retrieved, is_truncated = self._prepare_prompt(
-            query=query, top_k=top_k, mode=mode, budget=budget
+        prompt, system_instruction, included_chunks, total_retrieved, is_truncated = (
+            self._prepare_prompt(query=query, top_k=top_k, mode=mode, budget=budget)
         )
 
         raw_stream = self.llm_client.generate_stream(

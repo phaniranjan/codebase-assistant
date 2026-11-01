@@ -51,9 +51,7 @@ Remember to ground your answer strictly in the context above, cite exact file pa
 """
 
     @classmethod
-    def extract_citations(
-        cls, answer: str, retrieved_chunks: List[SearchResult]
-    ) -> List[Citation]:
+    def extract_citations(cls, answer: str, retrieved_chunks: List[SearchResult]) -> List[Citation]:
         """Extract citations referenced in the LLM answer, strictly validating line numbers against retrieved chunks.
 
         Never fabricates fallback citations if none are referenced in the answer text.
@@ -80,7 +78,9 @@ Remember to ground your answer strictly in the context above, cite exact file pa
         for match in matches:
             fpath, start_s, end_s = match
             fpath_norm = fpath.replace("\\", "/")
-            matched_chunk = chunk_by_path.get(fpath_norm) or chunk_by_path.get(fpath_norm.split("/")[-1])
+            matched_chunk = chunk_by_path.get(fpath_norm) or chunk_by_path.get(
+                fpath_norm.split("/")[-1]
+            )
 
             if matched_chunk:
                 # Validate line ranges strictly against the actual chunk boundaries
@@ -92,7 +92,11 @@ Remember to ground your answer strictly in the context above, cite exact file pa
                     claimed_end = int(end_s) if end_s else claimed_start
 
                     # If model cited lines outside the chunk bounds, clamp or revert to chunk bounds
-                    if claimed_start > chunk_end or claimed_end < chunk_start or claimed_start > claimed_end:
+                    if (
+                        claimed_start > chunk_end
+                        or claimed_end < chunk_start
+                        or claimed_start > claimed_end
+                    ):
                         # Completely out-of-bounds or inverted line hallucination
                         validated_start = chunk_start
                         validated_end = chunk_end

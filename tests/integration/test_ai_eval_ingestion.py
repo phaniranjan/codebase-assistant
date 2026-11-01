@@ -1,8 +1,8 @@
 """Integration test verifying read-only scanning and ingestion of the ai-evaluation repository."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.ingestion.indexer import IncrementalIndexer
 from codebase_assistant.ingestion.scanner import RepositoryScanner

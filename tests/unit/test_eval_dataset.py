@@ -1,8 +1,8 @@
 """Unit tests for GoldenDataset schema, path normalization, and repository validation."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.evaluation.dataset import (
     EvalCategory,
@@ -36,7 +36,9 @@ class TestGoldenDataset(unittest.TestCase):
 
         for cat in EvalCategory:
             cat_cases = dataset.filter_cases(category=cat)
-            self.assertGreaterEqual(len(cat_cases), 3, f"Category {cat.value} should have >= 3 cases")
+            self.assertGreaterEqual(
+                len(cat_cases), 3, f"Category {cat.value} should have >= 3 cases"
+            )
 
     def test_filter_cases(self):
         dataset_path = Path("data/golden_dataset.json")
@@ -76,7 +78,7 @@ class TestGoldenDataset(unittest.TestCase):
 
     def test_schema_validation_catches_invalid_file(self):
         with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as tf:
-            tf.write("{\"cases\": [{\"id\": \"1\", \"question\": \"q\", \"category\": \"invalid_cat\"}]}")
+            tf.write('{"cases": [{"id": "1", "question": "q", "category": "invalid_cat"}]}')
             tf_path = Path(tf.name)
 
         try:

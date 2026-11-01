@@ -1,9 +1,9 @@
 """Unit tests for cross-platform path normalization, atomic cache writes, and failure visibility."""
 
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from codebase_assistant.ingestion.chunker import LogicalChunker
@@ -82,8 +82,12 @@ class TestPathNormalizationAndHardening(unittest.TestCase):
                     indexer.save_index(indexer.load_manifest(), indexer.load_chunks())
 
             # Prior cache files must be preserved and undamaged!
-            self.assertEqual(indexer.manifest_path.read_text(encoding="utf-8"), initial_manifest_content)
-            self.assertEqual(indexer.chunks_path.read_text(encoding="utf-8"), initial_chunks_content)
+            self.assertEqual(
+                indexer.manifest_path.read_text(encoding="utf-8"), initial_manifest_content
+            )
+            self.assertEqual(
+                indexer.chunks_path.read_text(encoding="utf-8"), initial_chunks_content
+            )
 
             # Temporary partial files must not be left behind
             tmp_files = list(cache_dir.glob(".*.tmp"))
@@ -99,7 +103,9 @@ class TestPathNormalizationAndHardening(unittest.TestCase):
         try:
             (repo_path / "src").mkdir(parents=True)
             (repo_path / "src" / "valid.py").write_text("def ok(): pass\n", encoding="utf-8")
-            (repo_path / "src" / "crash.py").write_text("def will_crash(): pass\n", encoding="utf-8")
+            (repo_path / "src" / "crash.py").write_text(
+                "def will_crash(): pass\n", encoding="utf-8"
+            )
 
             indexer = IncrementalIndexer(repo_path, cache_dir=cache_dir)
 

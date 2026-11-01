@@ -83,7 +83,9 @@ class RepositoryScanner:
             if any(fnmatch.fnmatch(part.lower(), pat_lower) for part in rel_path.parts):
                 return True
             # Check prefix/suffix variants like .env.local, .env.staging
-            if pat_lower.startswith(".env") and (filename == ".env" or filename.startswith(".env.")):
+            if pat_lower.startswith(".env") and (
+                filename == ".env" or filename.startswith(".env.")
+            ):
                 return True
             if pat_lower.endswith(".env") and filename.endswith(".env"):
                 return True
@@ -199,7 +201,9 @@ class RepositoryScanner:
                     # Check packed-refs if branch ref file not yet unpacked
                     packed_refs = git_dir / "packed-refs"
                     if packed_refs.is_file():
-                        for line in packed_refs.read_text(encoding="utf-8", errors="ignore").splitlines():
+                        for line in packed_refs.read_text(
+                            encoding="utf-8", errors="ignore"
+                        ).splitlines():
                             parts = line.strip().split()
                             if len(parts) == 2 and parts[1] == ref_path:
                                 return SourceRevision(

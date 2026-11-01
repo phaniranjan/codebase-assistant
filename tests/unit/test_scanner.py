@@ -1,8 +1,8 @@
 """Unit tests for repository scanner and path filtering."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.ingestion.scanner import RepositoryScanner
 

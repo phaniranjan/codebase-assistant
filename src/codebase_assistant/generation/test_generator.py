@@ -2,8 +2,8 @@
 
 import ast
 import logging
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import List, Optional
 
 from codebase_assistant.config import get_settings
@@ -30,7 +30,9 @@ class TestProposalGenerator:
         self.repository_path = Path(repository_path).resolve()
         self.retriever = retriever
         self.llm_client = llm_client or GeminiClient()
-        self.assembler = assembler or ContextAssembler(default_max_tokens=get_settings().max_context_tokens)
+        self.assembler = assembler or ContextAssembler(
+            default_max_tokens=get_settings().max_context_tokens
+        )
 
     def _detect_testing_framework(self) -> str:
         """Inspect repository tests to detect pytest vs unittest convention."""
@@ -219,7 +221,9 @@ Generate the test suite proposal now:"""
 
         # 5. Extract Reasoning and Test Code
         reasoning = ""
-        reasoning_match = re.search(r"--- ARCHITECTURAL REASONING ---\s*(.*?)(?=--- FILE:|$)", raw_text, re.DOTALL)
+        reasoning_match = re.search(
+            r"--- ARCHITECTURAL REASONING ---\s*(.*?)(?=--- FILE:|$)", raw_text, re.DOTALL
+        )
         if reasoning_match:
             reasoning = reasoning_match.group(1).strip()
         else:
@@ -233,7 +237,9 @@ Generate the test suite proposal now:"""
             diff_match = re.search(r"```diff\n(.*?)```", raw_text, re.DOTALL)
             if diff_match:
                 try:
-                    proposed_code = DiffEngine.apply_diff_in_memory(original_test_content, diff_match.group(1))
+                    proposed_code = DiffEngine.apply_diff_in_memory(
+                        original_test_content, diff_match.group(1)
+                    )
                 except Exception:
                     pass
 
@@ -268,7 +274,9 @@ Generate the test suite proposal now:"""
             try:
                 tree = ast.parse(proposed_code)
                 for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+                    if isinstance(
+                        node, (ast.FunctionDef, ast.AsyncFunctionDef)
+                    ) and node.name.startswith("test_"):
                         test_methods.append(node.name)
             except Exception:
                 pass
@@ -293,10 +301,14 @@ Generate the test suite proposal now:"""
             else f"Test proposal verification failed: {'; '.join(syntax_errors)}"
         )
 
-        token_usage = {
-            "prompt_tokens": response.prompt_tokens or 0,
-            "completion_tokens": response.completion_tokens or 0,
-        } if response.prompt_tokens is not None else None
+        token_usage = (
+            {
+                "prompt_tokens": response.prompt_tokens or 0,
+                "completion_tokens": response.completion_tokens or 0,
+            }
+            if response.prompt_tokens is not None
+            else None
+        )
 
         return ProposalResult(
             task_description=f"Generate unit tests for '{source_file}'",

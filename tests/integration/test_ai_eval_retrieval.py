@@ -1,8 +1,8 @@
 """Integration test validating hybrid retrieval against the read-only ai-evaluation repository."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.embeddings.manager import EmbeddingManager
 from codebase_assistant.embeddings.mock import MockEmbeddingProvider
@@ -87,13 +87,17 @@ class TestAiEvalRetrievalIntegration(unittest.TestCase):
         )
 
         # 4. Query 1: BM25Retriever implementation
-        results_bm25 = retriever.search("BM25Retriever Robertson Spärck Jones IDF", top_k=3, mode="hybrid")
+        results_bm25 = retriever.search(
+            "BM25Retriever Robertson Spärck Jones IDF", top_k=3, mode="hybrid"
+        )
         self.assertGreaterEqual(len(results_bm25), 1)
         top_hit_bm25 = results_bm25[0]
         self.assertIn("rag_retriever.py", top_hit_bm25.chunk.file_path)
 
         # 5. Query 2: RAGPipeline implementation
-        results_rag = retriever.search("class RAGPipeline generator grounding prompt", top_k=3, mode="hybrid")
+        results_rag = retriever.search(
+            "class RAGPipeline generator grounding prompt", top_k=3, mode="hybrid"
+        )
         self.assertGreaterEqual(len(results_rag), 1)
         rag_files = [r.chunk.file_path for r in results_rag]
         self.assertTrue(

@@ -41,7 +41,12 @@ class PythonASTParser:
         try:
             tree = ast.parse(code, filename=file_path)
         except SyntaxError as e:
-            logger.warning("Syntax error parsing %s at line %d: %s. Using fallback.", file_path, e.lineno or 1, e)
+            logger.warning(
+                "Syntax error parsing %s at line %d: %s. Using fallback.",
+                file_path,
+                e.lineno or 1,
+                e,
+            )
             return [
                 ParsedSymbol(
                     name=Path(file_path).stem if file_path else "module",
@@ -73,7 +78,9 @@ class PythonASTParser:
                 header_end_line = max(1, node.lineno - 1)
                 break
 
-        if header_end_line > 0 and (module_docstring or module_imports or header_end_line < total_lines):
+        if header_end_line > 0 and (
+            module_docstring or module_imports or header_end_line < total_lines
+        ):
             header_lines = lines[:header_end_line]
             header_content = "\n".join(header_lines).strip()
             if header_content:

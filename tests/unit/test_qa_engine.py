@@ -143,10 +143,16 @@ class TestCodebaseQAEngine(unittest.TestCase):
         chunks = {"chunk_malicious": adversarial_chunk}
         vstore = VectorStore(
             dimension=64,
-            fingerprint={"provider": "MockEmbeddingProvider", "model_name": "mock-embedding-v1", "dimension": 64},
+            fingerprint={
+                "provider": "MockEmbeddingProvider",
+                "model_name": "mock-embedding-v1",
+                "dimension": 64,
+            },
         )
         vstore.add(["chunk_malicious"], [self.provider.embed_text(adversarial_chunk.content)])
-        retriever = HybridRetriever(chunks=chunks, vector_store=vstore, embedding_provider=self.provider)
+        retriever = HybridRetriever(
+            chunks=chunks, vector_store=vstore, embedding_provider=self.provider
+        )
 
         engine = CodebaseQAEngine(retriever=retriever, llm_client=self.llm_client)
         resp = engine.ask("Test exploit")

@@ -56,7 +56,9 @@ class TestEmbeddingManager(unittest.TestCase):
         initial_count = self.manager.vector_store.count()
 
         # Modify alpha.py
-        self.file1.write_text("def alpha_function_v2():\n    return 'new_alpha'\n", encoding="utf-8")
+        self.file1.write_text(
+            "def alpha_function_v2():\n    return 'new_alpha'\n", encoding="utf-8"
+        )
         self.indexer.index()
 
         # Incremental sync should only re-embed alpha's new chunk
@@ -86,7 +88,9 @@ class TestEmbeddingManager(unittest.TestCase):
         # 1. First sync with mock provider v1 (dimension 64)
         report1 = self.manager.sync()
         self.assertEqual(self.manager.vector_store.fingerprint.get("dimension"), 64)
-        self.assertEqual(self.manager.vector_store.fingerprint.get("model_name"), "mock-embedding-v1")
+        self.assertEqual(
+            self.manager.vector_store.fingerprint.get("model_name"), "mock-embedding-v1"
+        )
 
         # 2. Switch provider to model v2 with dimension 128
         new_provider = MockEmbeddingProvider(dimension=128, model_name="mock-embedding-v2")

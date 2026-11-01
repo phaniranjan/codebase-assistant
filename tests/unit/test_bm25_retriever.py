@@ -11,7 +11,9 @@ class TestBM25Retriever(unittest.TestCase):
     """Test suite for CodeTokenizer and BM25Retriever."""
 
     def test_code_tokenizer_splits_camel_and_snake(self):
-        tokens = CodeTokenizer.tokenize("class IncrementalIndexer(BaseIndexer): def parse_source_code(): pass")
+        tokens = CodeTokenizer.tokenize(
+            "class IncrementalIndexer(BaseIndexer): def parse_source_code(): pass"
+        )
         self.assertIn("incremental", tokens)
         self.assertIn("indexer", tokens)
         self.assertIn("parse", tokens)

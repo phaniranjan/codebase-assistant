@@ -2,8 +2,8 @@
 
 import json
 import math
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Iterator, List, Optional
 
 from codebase_assistant.llm.client import BaseLLMClient
@@ -36,14 +36,68 @@ class MockGeminiClient(BaseLLMClient):
         return max(1, int(math.ceil(len(text) / self.CHARS_PER_TOKEN)))
 
     STOPWORDS = {
-        "what", "is", "the", "how", "are", "in", "and", "where", "does", "do",
-        "which", "why", "who", "when", "with", "from", "for", "that", "this",
-        "about", "into", "over", "after", "before", "between", "under", "system",
-        "instruction", "override", "policy", "please", "tell", "explain", "describe",
-        "repository", "codebase", "code", "file", "files", "project", "directory",
-        "implementation", "implemented", "configure", "configured", "configuration",
-        "defined", "define", "works", "work", "using", "used", "handling", "handle",
-        "api", "secret", "secrets", "loop", "loops", "network", "networks", "flow",
+        "what",
+        "is",
+        "the",
+        "how",
+        "are",
+        "in",
+        "and",
+        "where",
+        "does",
+        "do",
+        "which",
+        "why",
+        "who",
+        "when",
+        "with",
+        "from",
+        "for",
+        "that",
+        "this",
+        "about",
+        "into",
+        "over",
+        "after",
+        "before",
+        "between",
+        "under",
+        "system",
+        "instruction",
+        "override",
+        "policy",
+        "please",
+        "tell",
+        "explain",
+        "describe",
+        "repository",
+        "codebase",
+        "code",
+        "file",
+        "files",
+        "project",
+        "directory",
+        "implementation",
+        "implemented",
+        "configure",
+        "configured",
+        "configuration",
+        "defined",
+        "define",
+        "works",
+        "work",
+        "using",
+        "used",
+        "handling",
+        "handle",
+        "api",
+        "secret",
+        "secrets",
+        "loop",
+        "loops",
+        "network",
+        "networks",
+        "flow",
     }
 
     def _sanitize_query(self, query: str) -> str:
@@ -68,24 +122,28 @@ class MockGeminiClient(BaseLLMClient):
             file_match = re.search(r"['\"]?([\w/\.\\]+\.py)['\"]?", task_str)
             f_path = file_match.group(1) if file_match else "src/main.py"
             stem = Path(f_path).stem.replace("test_", "")
-            return json.dumps({
-                "analysis": f"Execute repair workflow for: {task_str}",
-                "target_files": [f_path],
-                "test_files": [f"tests/unit/test_{stem}.py"],
-                "steps": [
-                    f"Inspect and retrieve context for '{f_path}'",
-                    "Propose minimal verified patch proposal",
-                    "Run sandboxed test suite",
-                ],
-                "success_criteria": [
-                    "All tests pass cleanly without errors",
-                    "AST syntax verification succeeds",
-                ],
-            })
+            return json.dumps(
+                {
+                    "analysis": f"Execute repair workflow for: {task_str}",
+                    "target_files": [f_path],
+                    "test_files": [f"tests/unit/test_{stem}.py"],
+                    "steps": [
+                        f"Inspect and retrieve context for '{f_path}'",
+                        "Propose minimal verified patch proposal",
+                        "Run sandboxed test suite",
+                    ],
+                    "success_criteria": [
+                        "All tests pass cleanly without errors",
+                        "AST syntax verification succeeds",
+                    ],
+                }
+            )
 
         # 1. Handle Agent Orchestration Loop (ReAct)
         if "AVAILABLE TOOLS:" in prompt and "[DEVELOPER TASK]" in prompt:
-            task_match = re.search(r"\[DEVELOPER TASK\]\s*(.+?)\s*\[END DEVELOPER TASK\]", prompt, re.DOTALL)
+            task_match = re.search(
+                r"\[DEVELOPER TASK\]\s*(.+?)\s*\[END DEVELOPER TASK\]", prompt, re.DOTALL
+            )
             task_str = task_match.group(1).strip() if task_match else "developer task"
 
             if "Observation:" in prompt:
@@ -97,7 +155,11 @@ class MockGeminiClient(BaseLLMClient):
 
             # First turn: decide action based on task phrasing
             task_lower = task_str.lower()
-            if "dependency" in task_lower or "dependencies" in task_lower or "manifest" in task_lower:
+            if (
+                "dependency" in task_lower
+                or "dependencies" in task_lower
+                or "manifest" in task_lower
+            ):
                 return "Thought: I should inspect project dependencies.\nAction: inspect_dependencies({})"
             if "read" in task_lower or "view" in task_lower:
                 file_match = re.search(r"['\"]([^'\"]+\.py)['\"]", task_str)
@@ -116,13 +178,17 @@ class MockGeminiClient(BaseLLMClient):
 
         # 2. Handle Code Proposal Generation
         if "[DEVELOPER TASK]" in prompt:
-            task_match = re.search(r"\[DEVELOPER TASK\]\s*(.+?)\s*\[END DEVELOPER TASK\]", prompt, re.DOTALL)
+            task_match = re.search(
+                r"\[DEVELOPER TASK\]\s*(.+?)\s*\[END DEVELOPER TASK\]", prompt, re.DOTALL
+            )
             task_str = task_match.group(1).strip() if task_match else "propose change"
             file_match = re.search(r"Target file to modify or create: '([^']+)'", prompt)
             target_file = file_match.group(1) if file_match else "src/proposal.py"
 
             # Check for current target file content first
-            target_content_match = re.search(r"\[CURRENT TARGET FILE CONTENT:[^\]]+\]\s*```python\s*(.+?)```", prompt, re.DOTALL)
+            target_content_match = re.search(
+                r"\[CURRENT TARGET FILE CONTENT:[^\]]+\]\s*```python\s*(.+?)```", prompt, re.DOTALL
+            )
             if target_content_match:
                 ctx_code = target_content_match.group(1).strip()
             else:
@@ -134,8 +200,12 @@ class MockGeminiClient(BaseLLMClient):
                     ctx_code = code_blocks[0].strip()
                 elif ctx_text:
                     clean_lines = [
-                        l for l in ctx_text.splitlines()
-                        if not l.startswith("###") and not l.startswith("[CHUNK") and not l.startswith("[Citation") and not l.startswith("Score:")
+                        l
+                        for l in ctx_text.splitlines()
+                        if not l.startswith("###")
+                        and not l.startswith("[CHUNK")
+                        and not l.startswith("[Citation")
+                        and not l.startswith("Score:")
                     ]
                     ctx_code = "\n".join(clean_lines).strip()
                 else:
@@ -160,14 +230,14 @@ class MockGeminiClient(BaseLLMClient):
                 proposed_code = (
                     f"{ctx_code}\n\n"
                     "def proposed_enhancement():\n"
-                    f"    \"\"\"Implementation for: {task_clean}\"\"\"\n"
+                    f'    """Implementation for: {task_clean}"""\n'
                     "    return True\n"
                 )
             else:
                 proposed_code = (
-                    "\"\"\"Proposed module implementation.\"\"\"\n\n"
+                    '"""Proposed module implementation."""\n\n'
                     "def execute_task():\n"
-                    f"    \"\"\"Implementation for: {task_clean}\"\"\"\n"
+                    f'    """Implementation for: {task_clean}"""\n'
                     "    return {'status': 'success'}\n"
                 )
 
@@ -188,10 +258,10 @@ class MockGeminiClient(BaseLLMClient):
             cls_name = "".join(part.capitalize() for part in mod_name.split("_"))
 
             test_code = (
-                f"\"\"\"Targeted unit tests for {target_file}.\"\"\"\n\n"
+                f'"""Targeted unit tests for {target_file}."""\n\n'
                 "import unittest\n\n\n"
                 f"class Test{cls_name}(unittest.TestCase):\n"
-                f"    \"\"\"Test suite covering core methods and edge cases of {mod_name}.\"\"\"\n\n"
+                f'    """Test suite covering core methods and edge cases of {mod_name}."""\n\n'
                 "    def test_core_functionality(self):\n"
                 "        self.assertTrue(True)\n\n"
                 "    def test_edge_case_empty_input(self):\n"
@@ -216,7 +286,9 @@ class MockGeminiClient(BaseLLMClient):
             return "The retrieved repository context does not contain sufficient details to answer this question."
 
         # Extract untrusted context block
-        ctx_match = re.search(r"<UNTRUSTED_REPOSITORY_CONTEXT>(.*?)</UNTRUSTED_REPOSITORY_CONTEXT>", prompt, re.DOTALL)
+        ctx_match = re.search(
+            r"<UNTRUSTED_REPOSITORY_CONTEXT>(.*?)</UNTRUSTED_REPOSITORY_CONTEXT>", prompt, re.DOTALL
+        )
         context_text = ctx_match.group(1).lower() if ctx_match else ""
 
         # Extract developer question
@@ -232,7 +304,9 @@ class MockGeminiClient(BaseLLMClient):
         has_evidence = any(w in context_text for w in sig_words) if sig_words else False
 
         # Extract references in context: ### [Reference 1] `path` (lines X-Y, symbol: `sym`)
-        ref_pattern = re.compile(r"### \[Reference \d+\] `([^`]+)` \(lines (\d+)-(\d+)(?:, symbol: `([^`]+)`)?\)")
+        ref_pattern = re.compile(
+            r"### \[Reference \d+\] `([^`]+)` \(lines (\d+)-(\d+)(?:, symbol: `([^`]+)`)?\)"
+        )
         matches = ref_pattern.findall(prompt)
 
         # If no references or no evidence found for query keywords, abstain!
@@ -258,7 +332,9 @@ class MockGeminiClient(BaseLLMClient):
                 f"- Found relevant implementation{sym_desc} at `[{fpath}:{s_line}-{e_line}]`."
             )
 
-        lines.append("\nThe functionality is implemented as shown in the referenced source files above.")
+        lines.append(
+            "\nThe functionality is implemented as shown in the referenced source files above."
+        )
         return "\n".join(lines)
 
     def generate(

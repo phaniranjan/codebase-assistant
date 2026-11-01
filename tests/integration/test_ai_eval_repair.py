@@ -3,9 +3,9 @@
 import hashlib
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -49,7 +49,9 @@ class TestAiEvalRepairIntegration(unittest.TestCase):
             chunks = indexer.load_chunks()
 
             cls.emb_provider = MockEmbeddingProvider()
-            manager = EmbeddingManager(cls.ai_eval_dir, cache_dir=cls.cache_dir, provider=cls.emb_provider)
+            manager = EmbeddingManager(
+                cls.ai_eval_dir, cache_dir=cls.cache_dir, provider=cls.emb_provider
+            )
             manager.sync()
             vector_store = manager.load_vector_store()
 
@@ -134,14 +136,21 @@ class TestAiEvalRepairIntegration(unittest.TestCase):
             main,
             [
                 "repair",
-                "--repo", str(self.ai_eval_dir),
-                "--task", "Review and optimize rag_pipeline.py",
-                "--target-file", "src/ai_evaluation/rag_pipeline.py",
-                "--test-command", "python -m unittest tests/rag/test_rag_pipeline.py",
-                "--provider", "mock",
+                "--repo",
+                str(self.ai_eval_dir),
+                "--task",
+                "Review and optimize rag_pipeline.py",
+                "--target-file",
+                "src/ai_evaluation/rag_pipeline.py",
+                "--test-command",
+                "python -m unittest tests/rag/test_rag_pipeline.py",
+                "--provider",
+                "mock",
                 "--auto-approve",
-                "--cache-dir", str(self.cache_dir),
-                "--max-retries", "1",
+                "--cache-dir",
+                str(self.cache_dir),
+                "--max-retries",
+                "1",
                 "--json",
             ],
         )

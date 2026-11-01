@@ -1,10 +1,10 @@
 """Unit tests for code and test proposal CLI commands."""
 
 import hashlib
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -211,7 +211,9 @@ class TestGenerationCLI(unittest.TestCase):
             hashes = {}
             for p in root.rglob("*"):
                 if p.is_file():
-                    hashes[p.relative_to(root).as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
+                    hashes[p.relative_to(root).as_posix()] = hashlib.sha256(
+                        p.read_bytes()
+                    ).hexdigest()
             return hashes
 
         pre_snapshot = snapshot_tree(self.repo_dir)

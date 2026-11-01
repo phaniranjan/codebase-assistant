@@ -2,10 +2,10 @@
 
 import hashlib
 import os
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -48,7 +48,9 @@ class TestAiEvalProposalsIntegration(unittest.TestCase):
             indexer.index()
 
             cls.emb_provider = MockEmbeddingProvider()
-            manager = EmbeddingManager(cls.ai_eval_dir, cache_dir=cls.cache_dir, provider=cls.emb_provider)
+            manager = EmbeddingManager(
+                cls.ai_eval_dir, cache_dir=cls.cache_dir, provider=cls.emb_provider
+            )
             manager.sync()
 
             chunks = indexer.load_chunks()
@@ -111,7 +113,9 @@ class TestAiEvalProposalsIntegration(unittest.TestCase):
             top_k=3,
         )
 
-        self.assertTrue(result.is_valid, f"Proposal verification failed: {result.verification_summary}")
+        self.assertTrue(
+            result.is_valid, f"Proposal verification failed: {result.verification_summary}"
+        )
         self.assertEqual(len(result.proposals), 1)
 
         prop = result.proposals[0]
@@ -140,7 +144,9 @@ class TestAiEvalProposalsIntegration(unittest.TestCase):
             top_k=3,
         )
 
-        self.assertTrue(result.is_valid, f"Test proposal verification failed: {result.verification_summary}")
+        self.assertTrue(
+            result.is_valid, f"Test proposal verification failed: {result.verification_summary}"
+        )
         self.assertEqual(len(result.proposals), 1)
 
         prop = result.proposals[0]

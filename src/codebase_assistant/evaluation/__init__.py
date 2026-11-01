@@ -23,8 +23,8 @@ from codebase_assistant.evaluation.quality_gates import (
 from codebase_assistant.evaluation.report import EvaluationReporter
 from codebase_assistant.evaluation.runner import (
     CategorySummary,
-    EvaluationRunReport,
     EvaluationRunner,
+    EvaluationRunReport,
 )
 
 __all__ = [

@@ -2,10 +2,10 @@
 
 import hashlib
 import os
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -51,7 +51,9 @@ class TestAiEvalAgentIntegration(unittest.TestCase):
             chunks = indexer.load_chunks()
 
             cls.emb_provider = MockEmbeddingProvider()
-            manager = EmbeddingManager(cls.ai_eval_dir, cache_dir=cls.cache_dir, provider=cls.emb_provider)
+            manager = EmbeddingManager(
+                cls.ai_eval_dir, cache_dir=cls.cache_dir, provider=cls.emb_provider
+            )
             manager.sync()
             vector_store = manager.load_vector_store()
 
@@ -104,7 +106,7 @@ class TestAiEvalAgentIntegration(unittest.TestCase):
             responses_queue=[
                 'Thought: I need to locate the RAG retriever implementation.\nAction: search_codebase({"query": "BM25Retriever"})',
                 'Thought: I will inspect the source file directly.\nAction: read_source_file({"file_path": "src/ai_evaluation/rag_retriever.py", "start_line": 1, "end_line": 30})',
-                'Thought: I have reviewed the implementation.\nFinal Answer: BM25Retriever is implemented in src/ai_evaluation/rag_retriever.py with tokenization and inverse document frequency scoring.',
+                "Thought: I have reviewed the implementation.\nFinal Answer: BM25Retriever is implemented in src/ai_evaluation/rag_retriever.py with tokenization and inverse document frequency scoring.",
             ]
         )
         policy = PolicyEngine(self.ai_eval_dir)
@@ -142,7 +144,7 @@ class TestAiEvalAgentIntegration(unittest.TestCase):
         client = MockGeminiClient(
             responses_queue=[
                 'Thought: I need to generate an enhancement proposal.\nAction: generate_code_proposal({"task": "Add latency metric", "target_file": "src/ai_evaluation/rag_pipeline.py"})',
-                'Final Answer: Generated context-aware AST-verified unified diff proposal for rag_pipeline.py.',
+                "Final Answer: Generated context-aware AST-verified unified diff proposal for rag_pipeline.py.",
             ]
         )
         coordinator = AgentCoordinator(tool_registry=registry, llm_client=client)

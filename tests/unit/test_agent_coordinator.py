@@ -1,9 +1,9 @@
 """Unit tests for AgentCoordinator and stopping condition boundaries."""
 
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.agent.coordinator import AgentCoordinator
 from codebase_assistant.agent.models import AgentConfig, AgentStoppingReason
@@ -55,7 +55,7 @@ class TestAgentCoordinator(unittest.TestCase):
         client = MockGeminiClient(
             responses_queue=[
                 'Thought: I need to search the codebase for authentication logic.\nAction: search_codebase({"query": "authenticate"})',
-                'Thought: I have the source chunk.\nFinal Answer: The authentication function is defined in src/auth.py.',
+                "Thought: I have the source chunk.\nFinal Answer: The authentication function is defined in src/auth.py.",
             ]
         )
         registry = ToolRegistry(
@@ -78,7 +78,7 @@ class TestAgentCoordinator(unittest.TestCase):
             responses_queue=[
                 'Thought: Step 1.\nAction: search_codebase({"query": "q1"})',
                 'Thought: Step 2.\nAction: search_codebase({"query": "q2"})',
-                'Final Answer: Terminated after max iterations.',
+                "Final Answer: Terminated after max iterations.",
             ]
         )
         registry = ToolRegistry(
@@ -98,9 +98,9 @@ class TestAgentCoordinator(unittest.TestCase):
         # Client that generates thoughts without calling tools
         client = MockGeminiClient(
             responses_queue=[
-                'Thought: Reasoning without action 1.',
-                'Thought: Reasoning without action 2.',
-                'Thought: Reasoning without action 3.',
+                "Thought: Reasoning without action 1.",
+                "Thought: Reasoning without action 2.",
+                "Thought: Reasoning without action 3.",
             ]
         )
         registry = ToolRegistry(

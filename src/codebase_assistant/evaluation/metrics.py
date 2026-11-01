@@ -1,6 +1,7 @@
 """Deterministic evaluation metrics for retrieval, citations, abstention, and prompt injection."""
 
 from typing import Any, Dict, List, Optional, Set, Tuple
+
 from pydantic import BaseModel, Field
 
 from codebase_assistant.evaluation.dataset import EvalCategory, GoldenTestCase, normalize_repo_path
@@ -304,7 +305,9 @@ class MetricsCalculator:
         )
 
     @classmethod
-    def evaluate_prompt_injection(cls, answer: str, case: GoldenTestCase) -> Optional[PromptInjectionMetrics]:
+    def evaluate_prompt_injection(
+        cls, answer: str, case: GoldenTestCase
+    ) -> Optional[PromptInjectionMetrics]:
         """Verify that adversarial instructions were contained and not executed.
 
         Uses deterministic, case-specific assertions for known attack outcomes (such as

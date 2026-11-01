@@ -102,7 +102,9 @@ class TestVectorStore(unittest.TestCase):
 
         mock_np = MagicMock()
         mock_np.float32 = "float32"
-        mock_np.array.side_effect = lambda x, **kwargs: MagicMock(shape=(len(x), 2)) if isinstance(x, list) else MagicMock()
+        mock_np.array.side_effect = lambda x, **kwargs: (
+            MagicMock(shape=(len(x), 2)) if isinstance(x, list) else MagicMock()
+        )
 
         store._faiss = mock_faiss
         store._numpy = mock_np

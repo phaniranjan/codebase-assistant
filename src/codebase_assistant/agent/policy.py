@@ -1,9 +1,9 @@
 """Security policy engine enforcing command whitelisting, workspace containment, and safe execution."""
 
 import os
-from pathlib import Path
 import re
 import shlex
+from pathlib import Path
 from typing import List, Tuple
 
 from codebase_assistant.generation.diff_engine import DiffEngine
@@ -11,6 +11,7 @@ from codebase_assistant.generation.diff_engine import DiffEngine
 
 class SecurityPolicyError(ValueError):
     """Raised when an operation violates security policy or sandbox boundaries."""
+
     pass
 
 
@@ -26,15 +27,47 @@ class PolicyEngine:
 
     # Disallowed shell operators and command injection tokens
     DANGEROUS_SHELL_TOKENS = {
-        ";", "&&", "||", "|", "&", ">", ">>", "<", "<<", "`", "$(",
-        "\n", "\r",
+        ";",
+        "&&",
+        "||",
+        "|",
+        "&",
+        ">",
+        ">>",
+        "<",
+        "<<",
+        "`",
+        "$(",
+        "\n",
+        "\r",
     }
 
     # Disallowed binary executions within command arguments
     DISALLOWED_BINARIES = {
-        "rm", "del", "erase", "format", "sh", "bash", "zsh", "cmd", "powershell",
-        "pwsh", "curl", "wget", "net", "ssh", "scp", "nc", "ncat", "telnet",
-        "sudo", "su", "chmod", "chown", "mkfs", "dd",
+        "rm",
+        "del",
+        "erase",
+        "format",
+        "sh",
+        "bash",
+        "zsh",
+        "cmd",
+        "powershell",
+        "pwsh",
+        "curl",
+        "wget",
+        "net",
+        "ssh",
+        "scp",
+        "nc",
+        "ncat",
+        "telnet",
+        "sudo",
+        "su",
+        "chmod",
+        "chown",
+        "mkfs",
+        "dd",
     }
 
     def __init__(self, repository_path: Path | str) -> None:
@@ -103,12 +136,25 @@ class PolicyEngine:
             # Check options with '=' (e.g. --rootdir=/path or -o=value)
             if arg.startswith("-") and "=" in arg:
                 opt, val = arg.split("=", 1)
-                if val and (Path(val).is_absolute() or "/" in val or "\\" in val or ".." in val or val.endswith((".py", ".ini", ".cfg", ".toml"))):
+                if val and (
+                    Path(val).is_absolute()
+                    or "/" in val
+                    or "\\" in val
+                    or ".." in val
+                    or val.endswith((".py", ".ini", ".cfg", ".toml"))
+                ):
                     self.validate_file_access(val)
             elif not arg.startswith("-"):
                 # Positional argument or value parameter:
                 # Skip known test runner command keywords
-                if arg.lower() not in ("discover", "run", "unittest", "pytest", "python", "python3"):
+                if arg.lower() not in (
+                    "discover",
+                    "run",
+                    "unittest",
+                    "pytest",
+                    "python",
+                    "python3",
+                ):
                     # Check if it's an expression filter (e.g. -k pattern or -m marker)
                     if prev_arg not in ("-k", "-m"):
                         self.validate_file_access(arg)

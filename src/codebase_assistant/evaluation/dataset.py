@@ -1,9 +1,10 @@
 """Schema and validation utilities for the golden evaluation dataset."""
 
-from enum import Enum
 import json
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -71,7 +72,9 @@ class GoldenDataset(BaseModel):
         """Persist dataset to JSON with deterministic indentation."""
         p = Path(file_path).resolve()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.model_dump(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        p.write_text(
+            json.dumps(self.model_dump(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
 
     def filter_cases(
         self,
@@ -87,7 +90,9 @@ class GoldenDataset(BaseModel):
         if is_answerable is not None:
             matched = [c for c in matched if c.is_answerable == is_answerable]
         if contains_prompt_injection is not None:
-            matched = [c for c in matched if c.contains_prompt_injection == contains_prompt_injection]
+            matched = [
+                c for c in matched if c.contains_prompt_injection == contains_prompt_injection
+            ]
         return matched
 
     def validate_against_repo(self, repo_path: Path | str) -> List[str]:

@@ -1,464 +1,346 @@
 # Codebase Assistant — RAG-Powered Coding Agent
 
-`codebase-assistant` is an AI-powered coding assistant that ingests an existing software repository, understands its architecture, tracks AST symbols, retrieves relevant source code via hybrid search, and coordinates with Gemini to answer questions, generate context-aware code proposals (as unified diffs), generate tests, and assist with debugging.
+`codebase-assistant` is an autonomous, RAG-powered coding assistant and agentic repair system designed to inspect software repositories, index AST symbols and documentation, perform hybrid semantic/keyword search, answer technical architecture questions with strict citations, generate AST-verified code and test proposals (as unified diffs), and orchestrate autonomous, bounded repair workflows with sandboxed test execution.
 
 ---
 
-## 🏗️ Architecture Blueprint & Implementation Status
+## 🏗️ Architecture Blueprint
 
-The diagram below illustrates the full target architecture across all phases. Implemented components are marked with `[Implemented]`; downstream capabilities are marked with `[Planned Phase N]`.
+The diagram below illustrates the end-to-end architecture across all seven development phases, highlighting the clear separation between ingestion, grounded retrieval, autonomous tool orchestration, sandboxed repair, and offline quality evaluation:
 
 ```mermaid
 flowchart TD
     %% FLOW 1: Indexing Flow
-    subgraph Flow1["1. Repository Ingestion & Indexing Flow"]
-        Repo["Target Codebase\n(Python source, Markdown docs, Config)"] --> Scanner["Repository Scanner [Implemented]\n(Path filters, Directory pruning, Secret exclusion)"]
-        Scanner --> Parser["AST & Structure Parser [Implemented]\n(Classes, Methods, Functions, Imports, Docs)"]
-        Parser --> Chunker["Logical Chunker [Implemented]\n(AST boundaries, Enclosure scope, Line numbers)"]
-        Chunker --> Indexer["Incremental Indexer [Implemented]\n(SHA-256 change detection, Stale eviction, Manifest)"]
-        Indexer --> LocalIndex[("Local Knowledge Base [Implemented]\n(.codebase_assistant/ manifest.json + chunks.json)")]
-        
-        Chunker -.->|Future Hook| EmbedModel["Embedding Provider [Implemented]\n(Gemini Embeddings + Local Vector Index)"]
-        EmbedModel -.-> LocalIndex
+    subgraph Flow1["1. Repository Ingestion & Indexing (Phases 1 & 2)"]
+        Repo["Target Codebase\n(Read-Only Knowledge Source)"] --> Scanner["Repository Scanner\n(Path filters, pruning, secret exclusion)"]
+        Scanner --> Parser["AST & Structure Parser\n(Classes, methods, functions, docs)"]
+        Parser --> Chunker["Logical Chunker\n(Scope preservation, line bounds, chunk IDs)"]
+        Chunker --> Indexer["Incremental Indexer\n(SHA-256 change detection, stale eviction)"]
+        Indexer --> LocalIndex[("Local Knowledge Base\n(.codebase_assistant/ manifest + chunks)")]
+        Chunker -.-> EmbedModel["Embedding Provider\n(Gemini text-embedding-004 / Mock)"]
+        EmbedModel -.-> VectorIndex[("Vector Store\n(.codebase_assistant/ cosine index)")]
     end
 
-    %% FLOW 2: Runtime Flow
-    subgraph Flow2["2. Runtime Execution Flow"]
-        DevRequest(["Developer Request\n(Question, Code Request, Debug Trace)"]) --> AgentCore["AgentCore [Implemented]\n(Workflow Coordinator)"]
-        
-        AgentCore -.-> Retriever["Hybrid Retriever [Implemented]\n(Cosine Vector + BM25/Symbol Search)"]
-        LocalIndex -.->|Read Index| Retriever
-        
-        Retriever -.-> ContextAssembler["Context Assembler [Implemented]\n(Token budget limiter)"]
-        ContextAssembler -.-> PromptBuilder["Prompt Builder [Implemented]\n(Strict grounding, Prompt injection defense)"]
-        PromptBuilder -.-> GeminiClient["Gemini Client [Implemented]\n(google-genai SDK / Mock)"]
-        GeminiClient -.-> AgentCore
-        
-        %% Proposal Generators
-        AgentCore -.-> CodeGen["CodeProposalGenerator [Implemented]\n(Context-aware unified diffs & AST verification)"]
-        AgentCore -.-> TestGen["TestProposalGenerator [Implemented]\n(Framework detection & targeted test suites)"]
-        CodeGen -.-> DevResponse(["Developer Output [Implemented]\n(Grounded Answer / Unified Diff Proposal)"])
-        TestGen -.-> DevResponse
-        
-        %% Tool Execution Loop
-        AgentCore -.->|Requires Tool| ToolManager["Tool Manager [Implemented]\n(Tool Dispatcher)"]
-        ToolManager -.-> PolicyCheck{"Policy Engine [Implemented]\n(Command Allowlist & Path Restrict)"}
-        PolicyCheck -.->|Policy Denied| PolicyRejection["Policy Rejection\n(Outright deny with security log)"] -.-> AgentCore
-        PolicyCheck -.->|Policy Passed| PermCheck{"Permission Check [Implemented]\n(Sensitive Operation?)"}
-        PermCheck -.->|Read-only: search, read_file| ToolExec["Tool Execution\n(Isolated execution)"]
-        PermCheck -.->|Consequential: test exec, file patch| UserApproval{"User Authorization\n(Approve execution?)"}
-        UserApproval -.->|Approved| ToolExec
-        UserApproval -.->|Denied| AgentCore
-        ToolExec -.-> AgentCore
+    %% FLOW 2: Runtime Retrieval & Q&A
+    subgraph Flow2["2. Grounded Retrieval & Q&A (Phase 3)"]
+        UserQ(["Developer Query / Task"]) --> Retriever["Hybrid Retriever\n(Cosine Vector Similarity + Okapi BM25 / RRF)"]
+        LocalIndex --> Retriever
+        VectorIndex --> Retriever
+        Retriever --> ContextAssembler["Context Assembler\n(Token budget limiter & deduplication)"]
+        ContextAssembler --> PromptBuilder["Prompt Builder\n(Strict grounding, injection barrier)"]
+        PromptBuilder --> LLMClient["Gemini Client\n(gemini-2.5-pro / gemini-2.5-flash / Mock)"]
+        LLMClient --> Answer(["Grounded Answer with Citations"])
     end
 
-    %% FLOW 3: Offline Evaluation Flow
-    subgraph Flow3["3. Offline Evaluation & Quality Gate Flow [Implemented]"]
-        GoldenData[("Golden Dataset [Implemented]\n(data/golden_dataset.json)")] --> EvalRunner["Evaluation Runner [Implemented]\n(EvaluationRunner / CLI evaluate)"]
-        EvalRunner -->|Benchmark Retrieval| Retriever["Hybrid Retriever"]
-        EvalRunner -->|Benchmark Q&A| QAEngine["CodebaseQAEngine"]
-        EvalRunner --> EvalMetrics["Metrics & Quality Gates [Implemented]\n(Chunk/File Metrics, Citations, Abstention, Injections)"]
-        EvalMetrics --> QualityReport["Quality Gate Report\n(eval_report.json + Markdown)"]
+    %% FLOW 3: Proposals & Patch Verification
+    subgraph Flow3["3. Proposal Generation & Diff Engine (Phase 5)"]
+        PromptBuilder --> CodeGen["CodeProposalGenerator\n(Context-aware unified diff generation)"]
+        PromptBuilder --> TestGen["TestProposalGenerator\n(Framework auto-detection, targeted test suite)"]
+        CodeGen --> DiffEngine["Deterministic Diff Engine\n(In-memory patch dry-run, AST syntax check)"]
+        TestGen --> DiffEngine
+        DiffEngine --> VerifiedProposal(["Verified Unified Diff Proposal"])
+    end
+
+    %% FLOW 4: Agent Orchestration & Sandboxing
+    subgraph Flow4["4. Agent Orchestration & Security Policy (Phase 6)"]
+        AgentCore["AgentCoordinator (ReAct Loop)\n(Step, token budget & iteration bounds)"]
+        AgentCore --> ToolReg["Tool Registry\n(READ_ONLY, PROPOSAL, CONSEQUENTIAL)"]
+        ToolReg --> PolicyCheck{"PolicyEngine\n(Command whitelist & path boundary)"}
+        PolicyCheck -->|Policy Denied| Abort["Immediate Rejection"]
+        PolicyCheck -->|Policy Passed| PermCheck{"PermissionEngine\n(Consequential Action?)"}
+        PermCheck -->|Read-only / Proposal| AutoExec["Automatic Execution"]
+        PermCheck -->|Consequential| AuthCheck{"User Authorization\n(Interactive prompt / --auto-approve)"}
+        AuthCheck -->|Denied| StopAgent["Clean Termination"]
+        AuthCheck -->|Approved| ExecTool["Execute Tool"]
+    end
+
+    %% FLOW 5: Agentic Repair Workflows
+    subgraph Flow5["5. Agentic Repair & Sandboxed Verification (Phase 7)"]
+        RepairCoord["RepairWorkflowCoordinator\n(Cumulative budget, timeout & retry tracking)"]
+        RepairCoord --> PlanStep["Task Planning & Context Retrieval"]
+        PlanStep --> ProposeStep["Diff Proposal & AST Verification"]
+        ProposeStep --> SandboxExec["Disposable Sandbox Workspace\n(tempfile workspace, proxy blocking, 30s timeout)"]
+        SandboxExec --> TestRun{"Sandboxed Test Execution\n(pytest / python -m unittest)"}
+        TestRun -->|Tests Pass| SuccessState["SUCCESS\n(Report generated, changes verified)"]
+        TestRun -->|Tests Fail| DiagEngine["DiagnosticEngine\n(Stack trace parsing, prompt sanitization)"]
+        DiagEngine --> RetryCheck{"Retries < Max?\n(Bounded self-repair)"}
+        RetryCheck -->|Yes| ProposeStep
+        RetryCheck -->|Exhausted| Rollback["Atomic Rollback\n(Restore backups, unlink new files)"]
+        Rollback --> FailState["MAX_RETRIES_EXCEEDED / ROLLBACK_FAILED"]
+    end
+
+    %% FLOW 6: Offline Evaluation Flow
+    subgraph Flow6["6. Offline Benchmark & Quality Gates (Phase 4)"]
+        GoldenData[("Golden Dataset\n(data/golden_dataset.json - 25 cases)")] --> EvalRunner["EvaluationRunner\n(Deterministic offline benchmark)"]
+        EvalRunner --> QualityGates{"Quality Gate Policy\n(Hard gates & provisional baselines)"}
+        QualityGates --> EvalReport["Reports & Artifacts\n(reports/eval_report.json + Markdown)"]
     end
 ```
 
 ---
 
-## 📋 Implementation Scope Matrix
+## 📋 Features by Phase
 
-| Component | Status | Description |
-| :--- | :---: | :--- |
-| **Repository Scanner** | ✅ Implemented | Traverses repo, prunes directories (`.git`, `deepeval_venv/`, caches), detects git revisions. |
-| **Secret Exclusion** | ✅ Implemented | Excludes `.env*`, `*.key`, `*.pem`, `id_rsa`, `token.json`, PEM private key content blocks. |
-| **AST Code Parser** | ✅ Implemented | Native Python AST extracting classes, methods, functions, docstrings, imports, decorators. |
-| **Markdown & Config Parsers** | ✅ Implemented | Heading-based markdown sectioning and config/manifest block parsing. |
-| **Logical Chunker** | ✅ Implemented | Enclosing symbol scope preservation, line numbers, deterministic IDs, oversized chunk sub-splitting. |
-| **Incremental Indexer** | ✅ Implemented | SHA-256 change detection, stale chunk eviction for modified/deleted/renamed files, repo identity checks. |
-| **Local Cache Storage** | ✅ Implemented | Local `.codebase_assistant/` manifest, chunks, and vector store. |
-| **CLI (`scan`, `index`, `inspect-chunks`, `embed`, `search`, `ask`, `evaluate`, `propose-code`, `propose-tests`, `agent`, `repair`)** | ✅ Implemented | Terminal commands for inspection, indexing, embeddings, hybrid search, repository Q&A, RAG evaluation, code/test proposals, autonomous agent orchestration, and end-to-end repair workflows. |
-| **Embeddings & Vector Store** | ✅ Implemented | Pluggable providers (Gemini & deterministic mock), local cosine vector store. |
-| **BM25 & Hybrid Retriever** | ✅ Implemented | CodeTokenizer, Okapi BM25 keyword search, Reciprocal Rank Fusion (RRF), context assembler. |
-| **Gemini Integration & Grounded Q&A** | ✅ Implemented | Grounded prompt building, prompt injection barrier, citation validation, GeminiClient & QA engine. |
-| **RAG Evaluation Framework & Quality Gates** | ✅ Implemented | Golden dataset (25 cases), chunk/file metrics, citation boundary checks, abstention matrix, injection containment, quality gates, and reports. |
-| **Code & Test Proposals** | ✅ Implemented | Context-aware unified diff generation, AST syntax verification, targeted test suite generation, and CLI commands (`propose-code`, `propose-tests`). |
-| **Controlled Tools & Execution Sandbox** | ✅ Implemented | ReAct coordinator, PolicyEngine, PermissionEngine, and isolated command execution. |
-| **Agentic Repair Workflows** | ✅ Implemented | End-to-end task execution: planning, context retrieval, proposal, atomic patch application, sandboxed testing, test failure diagnosis, bounded self-repair, and audit reports (`repair`). |
+| Phase | Capability | Core Modules |
+| :--- | :--- | :--- |
+| **Phase 1** | **Repository Ingestion & AST Parsing** | `RepositoryScanner`, `CodeParser`, `LogicalChunker`, `IncrementalIndexer` |
+| **Phase 2** | **Incremental Indexing & Local Caching** | SHA-256 change detection, repo identity check, stale chunk eviction |
+| **Phase 3** | **Embeddings, Hybrid Retrieval & Grounded Q&A** | `GeminiEmbeddingProvider`, `VectorStore`, `CodeTokenizer`, `BM25Retriever`, `HybridRetriever`, `CodebaseQAEngine` |
+| **Phase 4** | **Golden Dataset & Quality Gate Evaluation** | 25-case golden benchmark, chunk/file metrics, citation line checking, abstention matrix, injection defense |
+| **Phase 5** | **Code & Test Proposals with Diff Engine** | `DiffEngine` (in-memory dry-run, AST syntax check), `CodeProposalGenerator`, `TestProposalGenerator` |
+| **Phase 6** | **Controlled Tools & Execution Sandbox** | `AgentCoordinator` (ReAct loop), `PolicyEngine`, `PermissionEngine`, `ToolRegistry` |
+| **Phase 7** | **Agentic Repair Workflows** | `RepairWorkflowCoordinator`, disposable sandbox copy, `DiagnosticEngine`, multi-file backup/atomic rollback |
+| **Phase 8** | **Release Hardening, CI/CD & Final Handover** | Matrix CI workflow, Black/isort/mypy compliance, read-only cryptographic guarantees, packaging |
 
 ---
 
-## 🛠️ Setup & Installation
+## 🛠️ Installation & Setup
 
 ### Prerequisites
-- Python 3.10+ (tested on Python 3.13)
-- Modern packaging (`pyproject.toml`)
+- Python 3.10, 3.11, 3.12, or 3.13
+- Git
 
-### 1. Installation
-Install in editable mode:
+### 1. Editable Installation
+Clone the repository and install with all optional dependencies:
 ```bash
-pip install -e .
+git clone https://github.com/phaniranjan/codebase_assistant.git
+cd codebase_assistant
+
+# Install with AI (Gemini/FAISS), dev (pytest/mypy/black), and eval dependencies:
+pip install -e ".[ai,dev,eval]"
 ```
 
-To include development dependencies:
+Verify that the CLI is installed and responsive:
 ```bash
-pip install -e ".[dev]"
+codebase-assistant --help
 ```
 
-### 2. Configuration (`.env`)
-Copy the example environment configuration:
+### 2. Environment Configuration
+Copy the example `.env` file:
 ```bash
 cp .env.example .env
 ```
-Key configuration settings:
-- `CODEBASE_CACHE_DIR`: Directory where index manifests and chunks are stored (default: `.codebase_assistant`).
-- `MAX_TOOL_CALLS_PER_TURN`: Maximum tool iterations to prevent infinite loops (default: 5).
-- `COMMAND_TIMEOUT_SECONDS`: Strict timeout for command execution (default: 30s).
-- `GEMINI_API_KEY`: API key for Gemini LLM generation and embeddings (required for live Gemini operations).
 
----
+Key environment configuration variables:
+```ini
+# Gemini API Key (required for live Gemini operations; not required for mock/offline mode)
+GEMINI_API_KEY=your_gemini_api_key_here
 
-## 💻 CLI Usage
+# Model Selection
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_EMBEDDING_MODEL=text-embedding-004
 
-All commands accept the target repository either as a positional argument (e.g. `[REPO_PATH]`) or via `--repo-path` (defaulting to the current working directory `.`).
+# Cache & Storage
+CODEBASE_CACHE_DIR=.codebase_assistant
 
-When using the default `--provider gemini`, a valid `GEMINI_API_KEY` is required. If initialization fails, commands will fail explicitly with exit code 1 unless `--allow-fallback` is passed to allow offline mock fallback.
-
-### 1. Scan a Repository
-Scan a local repository to inspect eligible files, excluded files, and git revision without modifying the target:
-```bash
-python -m codebase_assistant.cli scan /path/to/repository
-# or: python -m codebase_assistant.cli scan --repo-path /path/to/repository
-```
-
-### 2. Index a Repository
-Perform an incremental index of the repository:
-```bash
-python -m codebase_assistant.cli index /path/to/repository
-```
-
-To force a full rebuild:
-```bash
-python -m codebase_assistant.cli index /path/to/repository --rebuild
-```
-
-Custom cache directory:
-```bash
-python -m codebase_assistant.cli index /path/to/repository --cache-dir .codebase_assistant/custom_index
-```
-
-### 3. Inspect Stored Chunks
-Inspect extracted AST symbols and metadata:
-```bash
-python -m codebase_assistant.cli inspect-chunks /path/to/repository --file rag_pipeline.py --limit 10
-```
-Filter by symbol name:
-```bash
-python -m codebase_assistant.cli inspect-chunks --symbol BM25Retriever
-```
-
-### 4. Generate Embeddings
-Compute and synchronize vector embeddings for all indexed chunks:
-```bash
-# Using Google Gemini embeddings (requires GEMINI_API_KEY)
-python -m codebase_assistant.cli embed /path/to/repository --provider gemini
-
-# Allow fallback to mock if Gemini API key is missing
-python -m codebase_assistant.cli embed /path/to/repository --provider gemini --allow-fallback
-
-# Or explicitly using deterministic mock embeddings (offline, zero API keys)
-python -m codebase_assistant.cli embed /path/to/repository --provider mock
-```
-
-### 5. Hybrid Search
-Retrieve code chunks using dense vector similarity, sparse BM25, or hybrid Reciprocal Rank Fusion (RRF):
-```bash
-# Hybrid search (combines vector + BM25) with positional or --repo-path
-python -m codebase_assistant.cli search "BM25Retriever implementation" /path/to/repository --mode hybrid
-python -m codebase_assistant.cli search "BM25Retriever implementation" --repo-path /path/to/repository --mode hybrid
-
-# Dense-only or sparse-only search
-python -m codebase_assistant.cli search "calculate IDF scores" /path/to/repository --mode dense_only
-python -m codebase_assistant.cli search "class RAGPipeline" /path/to/repository --mode sparse_only --top-k 5
-```
-
-### 6. Repository Q&A Reasoning
-Ask technical questions grounded strictly in the repository code with source citations:
-```bash
-# Grounded repository Q&A using Gemini
-python -m codebase_assistant.cli ask "How does the RAG pipeline handle prompt grounding?" /path/to/repository
-
-# Streaming response with real-time tokens and post-stream verified citations
-python -m codebase_assistant.cli ask "Explain the BM25 scoring algorithm" /path/to/repository --stream --top-k 3
-
-# Completely offline testing with mock provider (zero API keys needed)
-python -m codebase_assistant.cli ask "How does user authentication work?" /path/to/repository --provider mock
-```
-
-### 7. RAG Evaluation & Quality Gates
-Run reproducible evaluation benchmarks across retrieval, citation grounding, abstention, and prompt-injection containment:
-```bash
-# Offline evaluation using deterministic mock providers (zero network, fast)
-# Automatically saves reports to reports/eval_report.json and reports/eval_report.md
-python -m codebase_assistant.cli evaluate /path/to/repository
-
-# Benchmark all retrieval modes (hybrid, dense_only, sparse_only)
-python -m codebase_assistant.cli evaluate /path/to/repository --mode all
-
-# Run specific mode with custom top-k and custom report output paths
-python -m codebase_assistant.cli evaluate /path/to/repository \
-  --mode hybrid \
-  --top-k 5 \
-  --output-json custom_reports/eval_report.json \
-  --output-markdown custom_reports/eval_report.md
-
-# Disable writing report files to disk
-python -m codebase_assistant.cli evaluate /path/to/repository --no-report
-
-# Enforce quality gates (exits with non-zero exit code if hard or provisional gates fail, or if any case errors)
-python -m codebase_assistant.cli evaluate /path/to/repository --fail-under
-
-# Explicitly enabled live Gemini evaluation (requires GEMINI_API_KEY)
-python -m codebase_assistant.cli evaluate /path/to/repository --live
-```
-
-### 8. Code & Test Proposal Generation
-Generate context-aware unified diff modifications and targeted unit tests without modifying target files:
-```bash
-# Propose a code modification with architectural reasoning and AST verification
-python -m codebase_assistant.cli propose-code "Add exponential backoff retry to query execution" /path/to/repository --file src/pipeline.py
-
-# Save proposed unified diff patch to an external patch file
-python -m codebase_assistant.cli propose-code "Add query latency instrumentation" /path/to/repository --file src/pipeline.py --output-patch /path/to/external/query_latency.patch
-
-# Offline code proposal using mock provider
-python -m codebase_assistant.cli propose-code "Refactor authentication helper" /path/to/repository --provider mock
-
-# Propose targeted unit tests for a source file (auto-detects pytest vs unittest)
-python -m codebase_assistant.cli propose-tests src/pipeline.py /path/to/repository
-
-# Override testing framework convention and save patch
-python -m codebase_assistant.cli propose-tests src/pipeline.py /path/to/repository --framework pytest --output-patch /path/to/external/test_pipeline.patch
-```
-
-### 9. Autonomous Agent Orchestration
-Run the autonomous ReAct agent loop with controlled tools and policy sandboxing:
-```bash
-# Run agent in interactive authorization mode (prompts before running tests or applying patches)
-python -m codebase_assistant.cli agent "Find the retriever implementation and propose test coverage" /path/to/repository
-
-# Run agent with auto-approved consequential actions (for automated CI pipelines)
-python -m codebase_assistant.cli agent "Analyze project dependencies and locate authentication logic" /path/to/repository --auto-approve
-
-# Offline execution using deterministic mock provider
-python -m codebase_assistant.cli agent "Inspect calculator module" /path/to/repository --provider mock --auto-approve
+# Agent Bounds & Safety
+MAX_TOOL_CALLS_PER_TURN=5
+MAX_REASONING_STEPS=10
+COMMAND_TIMEOUT_SECONDS=30.0
+CONTEXT_TOKEN_BUDGET=8192
 ```
 
 ---
 
-## 🤖 Autonomous Agent Orchestration & Security Sandbox (Phase 6)
+## 💻 Complete CLI Reference
 
-Phase 6 introduces the central agent coordinator, controlled tool registry, and multi-tier permission engine adhering strictly to the operating guidelines defined in [`AGENTS.md`](file:///wsl.localhost/Ubuntu-26.04/home/phaniranjan/AI/codebase_assistant/AGENTS.md).
+All CLI commands accept the target repository either as a positional argument (`[REPO_PATH]`) or via `--repo-path` (defaulting to the current working directory `.`).
+
+Commands fail fast by default: when live Gemini operations fail due to quota or missing keys, they exit with code 1 instead of silently falling back to mock mode, unless `--allow-fallback` is explicitly provided.
+
+### 1. `scan`
+Scan a repository and display detected files, revisions, and excluded secrets:
+```bash
+codebase-assistant scan /path/to/repository
+```
+
+### 2. `index`
+Build or incrementally update the local AST symbol index:
+```bash
+codebase-assistant index /path/to/repository
+
+# Force full rebuild of the index:
+codebase-assistant index /path/to/repository --rebuild
+
+# Custom cache directory:
+codebase-assistant index /path/to/repository --cache-dir /external/cache/dir
+```
+
+### 3. `inspect-chunks`
+Inspect extracted chunks, AST symbol names, line boundaries, and metadata:
+```bash
+# Inspect chunks for a specific source file:
+codebase-assistant inspect-chunks /path/to/repository --file src/pipeline.py --limit 10
+
+# Filter by symbol name:
+codebase-assistant inspect-chunks /path/to/repository --symbol BM25Retriever
+```
+
+### 4. `embed`
+Generate and synchronize vector embeddings for all indexed chunks:
+```bash
+# Using live Gemini embeddings (requires GEMINI_API_KEY):
+codebase-assistant embed /path/to/repository --provider gemini
+
+# Offline execution using deterministic mock embeddings (zero API keys):
+codebase-assistant embed /path/to/repository --provider mock
+```
+
+### 5. `search`
+Retrieve relevant code chunks using dense vector similarity, sparse BM25, or hybrid Reciprocal Rank Fusion:
+```bash
+# Hybrid search (default):
+codebase-assistant search "BM25 score calculation" /path/to/repository --mode hybrid --top-k 5
+
+# Dense-only or sparse-only search:
+codebase-assistant search "class CodebaseQAEngine" /path/to/repository --mode sparse_only
+```
+
+### 6. `ask`
+Ask questions grounded strictly in the target repository code with verified citations:
+```bash
+# Live grounded Q&A with Gemini:
+codebase-assistant ask "How does the indexer detect modified files?" /path/to/repository
+
+# Streaming response with real-time token output:
+codebase-assistant ask "Explain the hybrid retrieval fusion formula" /path/to/repository --stream
+
+# Completely offline using mock provider:
+codebase-assistant ask "What is the token budget limit?" /path/to/repository --provider mock
+```
+
+### 7. `evaluate`
+Execute reproducible offline or live evaluation benchmarks against the golden dataset:
+```bash
+# Offline benchmark with quality gates enforced (exits code 1 on failure):
+codebase-assistant evaluate /path/to/repository --dataset data/golden_dataset.json --fail-under
+
+# Compare all retrieval modes (hybrid, dense_only, sparse_only):
+codebase-assistant evaluate /path/to/repository --mode all
+
+# Explicit live evaluation with Gemini:
+codebase-assistant evaluate /path/to/repository --live
+```
+
+### 8. `propose-code`
+Generate context-aware unified diff modifications with pre-flight AST validation:
+```bash
+# Propose a code modification:
+codebase-assistant propose-code "Add exponential backoff retry" /path/to/repository --file src/pipeline.py
+
+# Save proposed patch to an external patch file (never inside the target repository):
+codebase-assistant propose-code "Add logging" /path/to/repository --file src/pipeline.py --output-patch /tmp/patch.diff
+```
+
+### 9. `propose-tests`
+Generate targeted unit tests with automatic framework detection (`pytest` vs `unittest`):
+```bash
+codebase-assistant propose-tests src/pipeline.py /path/to/repository
+```
+
+### 10. `agent`
+Execute autonomous ReAct agent loop with controlled tools and interactive authorization:
+```bash
+# Interactive mode (prompts before running tests or modifying files):
+codebase-assistant agent "Locate calculator implementation and verify tests" /path/to/repository
+
+# Automated mode with pre-approved consequential actions (for disposable CI):
+codebase-assistant agent "Analyze dependency vulnerabilities" /path/to/repository --auto-approve
+
+# Offline agent execution:
+codebase-assistant agent "Inspect scanner module" /path/to/repository --provider mock --auto-approve
+```
+
+### 11. `repair`
+Orchestrate an end-to-end autonomous repair workflow (plan, propose, patch in memory, run sandboxed tests, diagnose failures, bounded self-repair, atomic rollback):
+```bash
+# Autonomous repair with automated verification:
+codebase-assistant repair --task "Fix ZeroDivisionError in calculate_average" --target-file src/calc.py --test-command "pytest tests/test_calc.py" /path/to/repository --auto-approve
+
+# Output JSON report:
+codebase-assistant repair --task "Refactor cache sync" /path/to/repository --json
+
+# Save Markdown audit report to external file:
+codebase-assistant repair --task "Fix timeout bug" /path/to/repository --report-file reports/repair_audit.md
+```
+
+---
+
+## 🔒 Security Model & Sandbox Architecture
+
+The security model is defined strictly around the principle that **target codebases are untrusted and read-only knowledge sources**:
 
 ### 1. Tool Permission Hierarchy
-Tools are partitioned into three distinct risk tiers:
-- **`READ_ONLY` (Automatic execution, zero side-effects)**:
-  - `search_codebase`: Scoped hybrid retrieval over indexed chunks.
-  - `read_source_file`: Workspace-contained source file reading with line range slicing.
-  - `find_related_tests`: Read-only symbol and test file discovery.
-  - `inspect_dependencies`: Dependency manifest inspection (`pyproject.toml`, `requirements.txt`).
-- **`PROPOSAL` (Automatic execution, produces in-memory diffs without disk modification)**:
-  - `generate_code_proposal`: Invokes `CodeProposalGenerator` to produce an AST-verified unified diff.
-  - `generate_test_proposal`: Invokes `TestProposalGenerator` to produce a targeted test suite diff.
-- **`CONSEQUENTIAL` (Mandatory interactive user authorization required)**:
-  - `run_selected_tests`: Executes whitelisted test runner commands (`pytest`, `unittest`) in an isolated subprocess with a 30s timeout and stripped network proxies.
-  - `apply_patch`: Dry-runs unified diffs in memory, runs AST verification on Python files, and applies changes to the target repository only upon explicit user confirmation.
+- **`READ_ONLY`** (`search_codebase`, `read_source_file`, `find_related_tests`, `inspect_dependencies`): Scoped strictly within the repository workspace. External symlinks are outright rejected.
+- **`PROPOSAL`** (`generate_code_proposal`, `generate_test_proposal`): Synthesizes changes entirely in memory as standard unified diffs. Pre-flight parses code with `ast.parse()`. No disk writes.
+- **`CONSEQUENTIAL`** (`run_selected_tests`, `apply_patch`): Requires explicit interactive confirmation from the user (unless running with `--auto-approve` in a disposable CI environment).
 
-### 2. Execution Sandbox & Security Policy (`PolicyEngine`)
-- **Command Allowlisting**: Only authorized test runners (`pytest`, `python -m unittest`, `python3 -m unittest`) are permitted.
-- **Shell Injection Defense**: Disallows shell chaining (`&&`, `;`, `||`, `|`), redirection (`>`, `<`, `>>`), subshell substitutions (`$()`, `` ` ``), and execution wrappers (`sudo`, `sh`, `bash`, `curl`, `wget`).
-- **Workspace Boundary Containment**: Enforces that all file reads, command arguments, and patch destinations resolve strictly within the target repository root, blocking relative traversal (`..`) and external symlinks.
+### 2. Disposable Execution Workspace & Network Isolation
+When running test suites during repair workflows:
+1. **Disposable Working Copy**: Tests are executed in an isolated temporary directory (`tempfile.TemporaryDirectory`). The target source checkout is never directly touched by test runners.
+2. **Command Whitelist**: `PolicyEngine` strictly permits only `pytest` and `python -m unittest` / `python3 -m unittest`. Shell metacharacters (`&&`, `;`, `|`, `>`, `$()`) are blocked.
+3. **Loopback Proxy Redirection**: The execution subprocess environment sets `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` to `http://127.0.0.1:0` with `NO_PROXY=""`, redirecting external network access to a dead loopback port.
+4. **Execution Timeout**: Commands enforce a hard 30-second timeout per execution.
 
-### 3. Agent Orchestration Loop (`AgentCoordinator`)
-- **ReAct Cycle**: Structured `Thought` $\rightarrow$ `Action` $\rightarrow$ `Observation` $\rightarrow$ `Final Answer` reasoning loop.
-- **Stopping Conditions**:
-  - Maximum 5 tool iterations per turn (`max_iterations = 5`).
-  - Maximum 10 reasoning steps (`max_reasoning_steps = 10`).
-  - 30-second command execution timeout (`command_timeout_seconds = 30.0`).
-  - Context token budget limit (`token_budget = 8192`).
-  - Safe termination if authorization is denied for consequential tools.
-- **Untrusted Input Barrier**: Treats all repository code and tool output as untrusted data, preventing adversarial comments from altering system instructions.
+### 3. Patch Application Atomicity & Exact Rollback
+Before applying any multi-file diff:
+- Original file contents are backed up in memory.
+- Newly created files are tracked.
+- If patch application or syntax validation fails, modified files are restored and new files are unlinked.
+- If restoration fails, `ROLLBACK_FAILED` is explicitly reported with the list of affected paths.
+
+### 4. Untrusted Diagnostic Sanitization
+Stack traces and test outputs can contain adversarial prompts. `sanitize_untrusted_text()` scrubs system delimiters (e.g. `[SYSTEM INSTRUCTIONS]`) and caps traceback lengths before passing them to the LLM for diagnosis.
+
+### 5. Read-Only Target Invariant
+The target repository (e.g., `ai-evaluation`) is cryptographically verified to be immutable. All index caches (`.codebase_assistant/`), evaluation reports (`reports/`), and patches must be written to external directories.
 
 ---
 
-## 🧩 Code & Test Proposal Generation (Phase 5)
+## 🔧 Troubleshooting & FAQ
 
-Phase 5 introduces context-aware code modification and automated unit test generation designed strictly around the read-only and deterministic verification principles defined in [`AGENTS.md`](file:///wsl.localhost/Ubuntu-26.04/home/phaniranjan/AI/codebase_assistant/AGENTS.md).
+### Gemini API Quotas & Credentials
+- **Issue**: `google.genai.errors.APIError: 429 Quota Exceeded` or missing key.
+- **Resolution**: Verify that `GEMINI_API_KEY` is set in your environment or `.env` file. If running in CI or offline testing, use `--provider mock` or evaluate without `--live` for deterministic, zero-network execution.
 
-### 1. Architectural Principles
-1. **Target Repositories are Read-Only Knowledge Sources**: The assistant never applies modifications directly to the repository without explicit interactive approval. Proposed changes are always emitted as standard unified diffs (`git diff` format) accompanied by architectural reasoning.
-2. **Deterministic Verification Before LLM Assertion**: Generated Python code and test suites are pre-flight parsed with Python's native `ast.parse()` (`DiffEngine.validate_ast_syntax`). If a syntax error is present, line and column numbers are surfaced and the proposal is marked invalid before being presented.
-3. **In-Memory Diff Engine & Patch Dry-Run**: `DiffEngine.generate_unified_diff` produces standard unified diffs, while `DiffEngine.apply_diff_in_memory` verifies hunk applications purely in memory, ensuring that diffs apply cleanly without ever writing to disk.
-4. **Boundary Containment & Path Traversal Defense**: All target file candidates and output patch locations are validated by `DiffEngine.validate_target_path`, preventing relative navigation (`..`) or absolute references that resolve outside the repository boundary.
+### Offline & Mock Execution
+- Every core command (`embed`, `search`, `ask`, `propose-code`, `propose-tests`, `agent`, `repair`, `evaluate`) supports `--provider mock` (or offline default in `evaluate`). Mock execution produces reproducible results without external API access.
 
-### 2. Code Modification Proposals (`CodeProposalGenerator`)
-- Retrieves relevant codebase chunks using hybrid search over the developer task and target file.
-- Constructs grounded prompts enforcing strict system instructions, prompt injection barriers, and architectural structure.
-- Parses LLM output into architectural reasoning and code sections.
-- Computes unified diff against the original file (or `/dev/null` for newly created files).
-- Validates in-memory patch application and executes AST syntax validation.
+### Cache Management & Stale Eviction
+- If repository files have been reorganized or if you want to regenerate the index from scratch, run:
+  ```bash
+  codebase-assistant index /path/to/repository --rebuild
+  ```
+- To specify an external cache directory outside the target repository:
+  ```bash
+  codebase-assistant index /path/to/repository --cache-dir /tmp/my_cache
+  ```
 
-### 3. Automated Unit Test Generation (`TestProposalGenerator`)
-- Inspects target source files and extracts AST symbol metadata (class names, function names, method signatures).
-- Auto-detects test framework conventions (`pytest` vs `unittest`) by scanning existing repository tests.
-- Determines conventional test file locations (e.g. `src/foo.py` -> `tests/test_foo.py` or `tests/unit/test_foo.py`).
-- Synthesizes comprehensive test suites covering nominal happy paths, boundary edge cases, and exception handling.
-- Validates test syntax with AST parsing and formats the proposed test suite as a unified diff.
-
-### 4. Read-Only Protection for Proposals
-- **CLI Invariant Guard**: The `propose-code` and `propose-tests` commands inspect `--output-patch` paths and outright reject any path that points inside the target repository.
-- **Cryptographic Integration Verification**: Integration tests against `ai-evaluation` compute SHA-256 digests across all repository files before and after proposal generation, verifying zero file modifications.
+### Windows & WSL Path Handling
+- Paths are normalized across Windows (`\`) and Unix (`/`) using `normalize_rel_path()`.
+- When referencing UNC or WSL paths (e.g., `\\wsl.localhost\...`), forward slashes or standard UNC format can be used interchangeably.
+- Test paths and target files are resolved and verified against the repository boundary to prevent path traversal attacks.
 
 ---
 
-## 📊 Evaluation Framework & Quality Gates
+## 🧪 Testing & CI/CD
 
-The Phase 4 evaluation framework provides reproducible, deterministic offline and opt-in live benchmarking for codebase retrieval and grounded Q&A.
-
-### 1. Golden Evaluation Dataset
-The golden dataset is versioned in [`data/golden_dataset.json`](file:///wsl.localhost/Ubuntu-26.04/home/phaniranjan/AI/codebase_assistant/data/golden_dataset.json) (current version `1.0.0`). It contains 25 grounded test cases across 7 categories:
-- **`architecture`** (4 cases): Module responsibilities, high-level pipeline flow, and component relationships.
-- **`symbol_lookup`** (4 cases): Class, function, method definitions, signatures, and symbol locations.
-- **`data_flow`** (3 cases): Execution sequences, intermediate transformations, and data structures.
-- **`configuration`** (3 cases): Settings, environment variables, default parameters, and CLI flags.
-- **`error_handling`** (4 cases): Exception hierarchies, defensive fallbacks, and recovery mechanisms.
-- **`unanswerable`** (4 cases): Questions requiring knowledge outside the repository (e.g. Kubernetes configs, Stripe billing, external Redis clusters, PyTorch training pipelines).
-- **`prompt_injection`** (3 cases): Deterministic adversarial attacks attempting system instruction override, database exfiltration, or role redirection.
-
-#### Adding New Dataset Cases
-To add test cases, append entries to `data/golden_dataset.json`:
-```json
-{
-  "id": "eval-custom-001",
-  "question": "What is the purpose of the evaluate CLI command?",
-  "category": "configuration",
-  "is_answerable": true,
-  "expected_files": ["src/codebase_assistant/cli.py"],
-  "expected_symbols": ["evaluate"],
-  "expected_facts": ["RAG evaluation", "--mode", "--fail-under"],
-  "dataset_version": "1.0.0"
-}
-```
-Validate dataset cases against the repository using:
+### Running Tests Locally
 ```bash
-python -m unittest tests/unit/test_eval_dataset.py
+# Run full unit test suite:
+pytest tests/unit -v --tb=short
+
+# Run adversarial security test suite:
+pytest tests/unit/test_repair_adversarial.py -v
+
+# Run format and lint checks:
+black --check src tests
+isort --check-only src tests
+mypy src
+
+# Run golden dataset quality evaluation:
+codebase-assistant evaluate ../ai-evaluation --dataset data/golden_dataset.json --fail-under
 ```
 
-### 2. Comprehensive Metrics
-Metrics are computed separately across retrieval, citations, abstention, and adversarial containment:
-
-#### A. Retrieval Metrics (Separate Chunk & File Levels)
-- **Chunk-Level**: `Recall@K`, `Precision@K`, `MRR`, `Hit Rate@K` computed over retrieved vs relevant chunk IDs.
-- **File-Level (Deduplicated)**: Normalized file paths (`/`-separated) deduplicated per retrieval ranking.
-  - $\text{Recall}@K = \frac{|\mathcal{F}_{\text{retrieved@K}} \cap \mathcal{F}_{\text{expected}}|}{|\mathcal{F}_{\text{expected}}|}$
-  - $\text{Precision}@K = \frac{|\mathcal{F}_{\text{retrieved@K}} \cap \mathcal{F}_{\text{expected}}|}{K}$
-  - $\text{MRR} = \frac{1}{\text{rank of first relevant file}}$ ($0$ if none relevant in top-$K$).
-  - $\text{Hit Rate}@K = 1.0$ if any expected file is in top-$K$, else $0.0$.
-  - **Denominator Semantics**: For unanswerable queries ($|\mathcal{F}_{\text{expected}}| = 0$), retrieval metrics are `None` and excluded from retrieval averages.
-- **Symbol Hit Rate**: Proportion of expected symbols found in the retrieved chunks.
-
-#### B. Citation Metrics
-- **Citation Validity Rate**: Fraction of model-generated citations pointing to valid retrieved chunk files.
-- **Citation Line-Boundary Correctness**: Percentage of citations whose referenced line ranges fall strictly within the matched chunk's boundaries (with multi-chunk line matching across chunks from the same file).
-- **Citation Coverage**: Ratio of expected files covered by citations. Empty citation sets on answerable questions yield $0.0$.
-
-#### C. Abstention & Hallucination Metrics
-Evaluated using a full confusion matrix:
-- **True Positive ($TP$)**: Assistant answers an answerable question.
-- **True Negative ($TN$)**: Assistant abstains on an unanswerable question.
-- **False Positive ($FP$, Missed Abstention)**: Assistant attempts to answer an unanswerable question without evidence (hallucination).
-- **False Negative ($FN$, Unnecessary Abstention)**: Assistant refuses an answerable question when evidence exists.
-- **Rates**:
-  - $\text{Correct Abstention Rate} = \frac{TN}{TN + FP}$ (Hard gate: 100%)
-  - $\text{Missed Abstention Rate} = \frac{FP}{TN + FP}$ (Target: 0%)
-  - $\text{Unnecessary Abstention Rate} = \frac{FN}{TP + FN}$ (Target: 0%)
-
-#### D. Prompt Injection Containment
-- Evaluates whether adversarial instructions embedded in repository chunks or queries (e.g. system instruction overrides, canary extractions, or unauthorized state claims) were contained.
-- **Case-Specific Assertions**: Uses case-level `prohibited_claims` to check specific unauthorized attack outcomes rather than relying solely on global word blacklists. This ensures that legitimate security queries discussing commands (e.g. asking how the codebase guards against `drop table`) are not falsely flagged as compromised.
-- **Heuristic Defense**: Documented as a deterministic rule-based heuristic for known attack outcomes rather than an exhaustive security proof against novel obfuscated payloads.
-
-### 3. Quality Gates Policy & Baseline Measurements
-The quality gate policy distinguishes between non-negotiable **Hard Gates** and **Provisional Retrieval Baselines**. Quality gates fail closed: any unhandled runtime error or skipped evaluation case immediately fails the gate:
-
-| Gate Metric | Threshold | Gate Type | Description |
-| :--- | :---: | :---: | :--- |
-| **Zero Case Errors** | `0` errors | **Hard Gate** | All test cases must execute successfully without runtime errors or skips. |
-| **Citation Validity Rate** | `1.0` (100%) | **Hard Gate** | Zero hallucinated citations allowed. |
-| **Citation Line Boundaries** | `1.0` (100%) | **Hard Gate** | Line ranges must fall strictly within retrieved chunk spans. |
-| **Abstention Recall** | `1.0` (100%) | **Hard Gate** | All unanswerable questions must trigger correct abstention. |
-| **Prompt Injection Containment** | `1.0` (100%) | **Hard Gate** | Zero execution of adversarial instructions or prohibited claims. |
-| **File Hit Rate@5** | `≥ 0.85` | Provisional | Baseline: hybrid `1.00`, sparse `1.00`, dense `0.95`. |
-| **File Recall@5** | `≥ 0.70` | Provisional | Baseline: hybrid `0.94`, sparse `0.91`, dense `0.89`. |
-| **File MRR** | `≥ 0.65` | Provisional | Baseline: hybrid `0.81`, sparse `0.85`, dense `0.76`. |
-
-### 4. Read-Only Protection & Offline Determinism
-- **Cryptographic Read-Only Tree Verification**: The integration test hashes every single file in the target repository (including hidden files, configs, and dependencies) before and after evaluation runs. Any file modification, creation, or deletion immediately triggers an assertion failure.
-- **Cache & Report Relocation**: Both `EvaluationRunner` and the `evaluate` CLI resolve paths and reject any custom `--cache-dir` located inside the target repository. If default caches or reports would fall inside the target tree, they are safely relocated to external temporary storage.
-- **Zero-Network Offline Mode**: Default evaluation runs completely offline with deterministic mock embeddings and synthesis.
-- **Explicit Live Mode**: Live Gemini evaluation requires `--live` and a valid `GEMINI_API_KEY`. It records model name, provider, dataset version, and token usage, and fails explicitly on API errors without silent fallback.
-
----
-
-## 🔄 Agentic Repair Workflows (Phase 7)
-
-`codebase-assistant` orchestrates end-to-end development tasks through an autonomous, bounded repair workflow:
-1. **Task Planning**: Analyzes requirements, detects target source files, identifies candidate test suites, and breaks work down into step-by-step criteria.
-2. **Context Retrieval**: Queries the hybrid knowledge base to assemble grounded context and symbol references.
-3. **Proposal & Pre-Flight Syntax Check**: Constructs minimal unified diffs and deterministically parses them with Python's AST parser.
-4. **Atomic In-Memory Application**: Dry-runs patches in memory before touching disk, guaranteeing that any hunk failure or syntax error results in zero disk modifications.
-5. **Sandboxed Test Verification**: Executes test suites inside disposable temporary workspace copies with loopback proxy blocking (`127.0.0.1:0`), ensuring tests cannot leak side-effects or touch the original repository.
-6. **Diagnostic Engine & Self-Repair Feedback**: If tests fail, parses stack traces, extracts assertion failures, formulates an actionable diagnosis, and feeds diagnostic feedback into bounded repair attempts (default: 3).
-7. **Clean Rollback & Audit Reporting**: If repair attempts exceed retry limits, rolls back all workspace changes cleanly and produces comprehensive Markdown and JSON audit reports.
-
-### CLI Usage
-
-```bash
-# Execute end-to-end repair with verification
-codebase-assistant repair --task "Fix division by zero in src/calc.py" --test-command "pytest tests/test_calc.py" --auto-approve
-
-# Output machine-readable JSON report
-codebase-assistant repair --task "Add input validation" --repo /path/to/repo --max-retries 3 --json
-
-# Export Markdown audit report to file
-codebase-assistant repair --task "Refactor cache eviction" --report-file reports/repair_audit.md
-```
-
----
-
-### Security Guardrails
-1. **Read-Only Target Repository**: The assistant treats target codebases as strictly read-only knowledge sources.
-2. **Symlink Containment**: Symlinks pointing outside the repository boundary are blocked (`[SYMLINK_OUTSIDE]`) to prevent path traversal attacks.
-3. **Repository Identity Validation**: The indexer binds cache manifests to the repository's identity and path, preventing cross-repository index corruption.
-4. **Stale Eviction Integrity**: Modified, deleted, renamed, or unparseable files have their old chunks evicted immediately, preventing stale chunks from appearing current.
-5. **Deterministic AST Pre-Flight Verification**: Every code modification or test suite proposal must be successfully parsed by `ast.parse()` before being accepted or displayed.
-6. **In-Memory Diff Application**: Patches are applied and dry-run in memory (`DiffEngine.apply_diff_in_memory`) without touching or altering disk contents.
-
-### Limits of Secret Detection
-The repository scanner incorporates multi-layered secret filtering:
-- **Filename & Path Rules**: Rejects `.env`, `.env.*`, `*.pem`, `*.key`, `*.pkcs12`, `*.pfx`, `*.p12`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `credentials.json`, `token.json`, `secrets.yaml`, and `.netrc`.
-- **Content Inspection**: Inspects file headers for cryptographic private key blocks (`-----BEGIN RSA PRIVATE KEY-----`, etc.).
-
-**Known Limitations**:
-- Pattern and header matching is **not an entropy-based DLP scanner**.
-- It does **not** detect inline API tokens (e.g. `sk_live_...`, `AIza...`), database connection strings with embedded passwords, or obfuscated credentials embedded inside valid source code.
-- Projects should enforce pre-commit secret detection (e.g., Gitleaks, TruffleHog) to prevent secrets from being committed to source repositories in the first place.
-
----
-
-## 🧪 Running Tests
-
-Run the full unit and integration test suite:
-```bash
-python -m unittest discover -s tests -v
-```
-
-All unit and integration tests execute completely offline without requiring API keys or external services.
+### GitHub Actions CI
+The CI workflow (`.github/workflows/ci.yml`) executes on every push and pull request across Python **3.10, 3.11, 3.12, and 3.13**, verifying formatting, typing, unit tests, adversarial security tests, and RAG quality gates on every commit.

@@ -43,7 +43,9 @@ class TestContextAssembler(unittest.TestCase):
         assembler = ContextAssembler(default_max_tokens=1000)
         context = assembler.assemble(self.results)
 
-        self.assertIn("### [Reference 1] `src/main.py` (lines 1-2, symbol: `start`)", context.formatted_text)
+        self.assertIn(
+            "### [Reference 1] `src/main.py` (lines 1-2, symbol: `start`)", context.formatted_text
+        )
         self.assertIn("def start():", context.formatted_text)
         self.assertEqual(len(context.included_chunks), 2)
         self.assertEqual(context.omitted_chunks_count, 0)

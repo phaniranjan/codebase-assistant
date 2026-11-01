@@ -1,9 +1,9 @@
 """Unit tests for EvaluationRunner and EvaluationReporter."""
 
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from codebase_assistant.evaluation.dataset import EvalCategory, GoldenDataset, GoldenTestCase

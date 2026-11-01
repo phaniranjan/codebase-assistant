@@ -1,8 +1,8 @@
 """Unit tests for Agent PolicyEngine."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from codebase_assistant.agent.policy import PolicyEngine, SecurityPolicyError
 
@@ -118,11 +118,7 @@ class TestPolicyEngine(unittest.TestCase):
 
     def test_validate_patch_targets(self):
         valid_diff = (
-            "--- a/src/main.py\n"
-            "+++ b/src/main.py\n"
-            "@@ -1,1 +1,1 @@\n"
-            "-x = 1\n"
-            "+x = 2\n"
+            "--- a/src/main.py\n" "+++ b/src/main.py\n" "@@ -1,1 +1,1 @@\n" "-x = 1\n" "+x = 2\n"
         )
         targets = self.policy.validate_patch_targets(valid_diff)
         self.assertEqual(len(targets), 1)
