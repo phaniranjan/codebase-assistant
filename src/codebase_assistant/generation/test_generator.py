@@ -101,9 +101,11 @@ class TestProposalGenerator:
         framework: str,
         symbols: List[str],
         context_block: str,
+        task: Optional[str] = None,
     ) -> str:
         """Construct prompt instructing the LLM to generate targeted unit tests."""
         sym_desc = f"Key symbols to test: {', '.join(symbols)}." if symbols else ""
+        task_desc = f"Testing Goals / Requirements: {task}\n" if task else ""
 
         prompt = f"""[SYSTEM INSTRUCTIONS]
 You are an expert AI test engineer writing unit tests for an existing codebase.
@@ -130,7 +132,7 @@ Output Format:
 Target source file: '{source_file}'
 Target test file: '{test_file}'
 Framework: '{framework}'
-{sym_desc}
+{task_desc}{sym_desc}
 [END TEST GENERATION TASK]
 
 [CONTEXT_START]
@@ -143,17 +145,19 @@ Generate the test suite proposal now:"""
     def propose_tests(
         self,
         source_file: str,
+        task: Optional[str] = None,
         framework: Optional[str] = None,
         top_k: int = 5,
         budget: int = 8192,
     ) -> ProposalResult:
         """Generate targeted test proposal for the given source file."""
+        task_desc = task or f"Generate unit tests for '{source_file}'"
         # Validate source file path against repository boundary and symlink escape
         try:
             abs_source = DiffEngine.validate_target_path(self.repository_path, source_file)
         except ValueError as e:
             return ProposalResult(
-                task_description=f"Generate unit tests for '{source_file}'",
+                task_description=task_desc,
                 provider_name=type(self.llm_client).__name__,
                 model_name=getattr(self.llm_client, "model_name", "unknown"),
                 proposals=[],
@@ -165,7 +169,7 @@ Generate the test suite proposal now:"""
 
         if not abs_source.is_file():
             return ProposalResult(
-                task_description=f"Generate unit tests for '{source_file}'",
+                task_description=task_desc,
                 provider_name=type(self.llm_client).__name__,
                 model_name=getattr(self.llm_client, "model_name", "unknown"),
                 proposals=[],
@@ -216,6 +220,7 @@ Generate the test suite proposal now:"""
             framework=active_framework,
             symbols=symbols,
             context_block=assembled.formatted_text,
+            task=task,
         )
 
         response = self.llm_client.generate(prompt=prompt, temperature=0.0)

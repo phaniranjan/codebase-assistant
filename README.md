@@ -87,10 +87,11 @@ flowchart TD
 | **Phase 2** | **Incremental Indexing & Local Caching** | SHA-256 change detection, repo identity check, stale chunk eviction |
 | **Phase 3** | **Embeddings, Hybrid Retrieval & Grounded Q&A** | `GeminiEmbeddingProvider`, `VectorStore`, `CodeTokenizer`, `BM25Retriever`, `HybridRetriever`, `CodebaseQAEngine` |
 | **Phase 4** | **Golden Dataset & Quality Gate Evaluation** | 25-case golden benchmark, chunk/file metrics, citation line checking, abstention matrix, injection defense |
-| **Phase 5** | **Code & Test Proposals with Diff Engine** | `DiffEngine` (in-memory dry-run, AST syntax check), `CodeProposalGenerator`, `TestProposalGenerator` |
+| **Phase 5** | **Code & Test Proposals with Diff Engine** | `DiffEngine` (in-memory dry-run, AST syntax check, unified diff splitting), `CodeProposalGenerator`, `TestProposalGenerator` |
 | **Phase 6** | **Controlled Tools & Execution Sandbox** | `AgentCoordinator` (ReAct loop), `PolicyEngine`, `PermissionEngine`, `ToolRegistry` |
 | **Phase 7** | **Agentic Repair Workflows** | `RepairWorkflowCoordinator`, disposable sandbox copy, `DiagnosticEngine`, multi-file backup/atomic rollback |
-| **Phase 8** | **Release Hardening, CI/CD & Final Handover** | Matrix CI workflow, Black/isort/mypy compliance, read-only cryptographic guarantees, packaging |
+| **Phase 8** | **Release Hardening, CI/CD & CLI Baseline** | Matrix CI workflow, Black/isort/mypy compliance, read-only cryptographic guarantees, packaging |
+| **Phase 9** | **Antigravity Conversational IDE Integration (MCP)** | `MCPBackend`, `FastMCP` STDIO server, 11 semantic engineering tools, conversational skill (`.agents/skills/codebase-assistant/SKILL.md`), cryptographic token gating, fail-closed provider safety |
 
 ---
 
@@ -264,36 +265,64 @@ codebase-assistant repair --task "Refactor cache sync" /path/to/repository --jso
 codebase-assistant repair --task "Fix timeout bug" /path/to/repository --report-file reports/repair_audit.md
 ```
 
+### 12. `mcp`
+Launch the Model Context Protocol (MCP) server over standard input/output (STDIO) for Google Antigravity conversational IDE integration:
+```bash
+# Launch MCP server with live Gemini providers (fails fast if GEMINI_API_KEY is missing or invalid):
+codebase-assistant mcp
+
+# Force offline deterministic mock mode (zero network and zero API keys required):
+codebase-assistant mcp --mock
+
+# Launch MCP server allowing fallback to mock mode if live Gemini initialization fails:
+codebase-assistant mcp --allow-fallback
+```
+
+You can also launch the server directly using the registered console script:
+```bash
+codebase-assistant-mcp
+```
+
 ---
 
 ## 🔒 Security Model & Sandbox Architecture
 
 The security model is defined strictly around the principle that **target codebases are untrusted and read-only knowledge sources**:
 
-### 1. Tool Permission Hierarchy
-- **`READ_ONLY`** (`search_codebase`, `read_source_file`, `find_related_tests`, `inspect_dependencies`): Scoped strictly within the repository workspace. External symlinks are outright rejected.
-- **`PROPOSAL`** (`generate_code_proposal`, `generate_test_proposal`): Synthesizes changes entirely in memory as standard unified diffs. Pre-flight parses code with `ast.parse()`. No disk writes.
-- **`CONSEQUENTIAL`** (`run_selected_tests`, `apply_patch`): Requires explicit interactive confirmation from the user (unless running with `--auto-approve` in a disposable CI environment).
+### 1. Tool Permission Hierarchy & Authorization Tiers
+- **`READ_ONLY`** (`search_codebase`, `read_source_file`, `find_related_tests`, `inspect_dependencies`, `repository_status`, `ask_codebase`): Scoped strictly within the repository workspace. External symlinks and path traversals (`..`) are outright rejected.
+- **`PROPOSAL`** (`generate_code_proposal`, `generate_test_proposal`, `propose_code`, `propose_tests`): Synthesizes changes entirely in memory as standard unified diffs. Pre-flight parses code with `ast.parse()`. No disk writes.
+- **`CONSEQUENTIAL`** (`run_selected_tests`, `apply_patch`, `apply_approved_patch`): Requires explicit human authorization. In CLI mode, interactive prompts or `--auto-approve` (disposable CI only) are enforced. Over conversational MCP, model-generated confirmations alone cannot bypass authorization.
 
-### 2. Disposable Execution Workspace & Network Isolation
+### 2. Cryptographic Authorization & Model Confirmation Immunity
+- **Model Confirmation Immunity**: LLMs can easily generate strings like `confirmation="CONFIRM_APPLY"`. In conversational MCP mode, passing confirmation parameters alone **never modifies files on disk**.
+- **Safe Pre-Flight Fallback**: When `apply_approved_patch` is invoked without a valid server authorization token, it performs complete in-memory hunk dry-runs and Python AST syntax validation for all target files, saves the pre-flight validated patch to an external `.diff` file outside the repository, and returns the exact command for manual application:
+  ```bash
+  cd /path/to/workspace && git apply /external/cache/patches/validated_patch.diff
+  ```
+- **Cryptographic Token Gating**: Direct programmatic disk modifications are permitted only when presenting a valid, unexpired server-issued one-time token (`auth_token`) generated via `issue_authorization_token()`.
+
+### 3. Workspace Boundary & Protected Repository Invariant
+- **Protected Repositories**: The target repository (e.g., `ai-evaluation` / `ai_evaluation`) is permanently hardcoded as a protected read-only knowledge source. Attempting to register it as writable or modify it raises an immediate `PermissionError` and is denied.
+- **Exact Registered Workspaces**: Modifications can only target explicitly registered writable workspaces (`register_writable_workspace` or `set_active_repository(..., writable=True)`). Paths are canonicalized via `os.path.realpath()`; symlink escapes, parent traversals (`..`), and absolute path escapes are blocked. An active repository's writable flag never authorizes an unrelated path.
+
+### 4. Multi-File Patch Atomicity, Permissions & Exact Rollback
+- **Deterministic Splitting**: Multi-file unified diffs are deterministically split into per-file patches via `DiffEngine.split_unified_diff`.
+- **Pre-Flight Validation (Zero Partial Writes)**: Every affected file undergoes an in-memory dry-run (`DiffEngine.apply_diff_in_memory`) and deterministic AST syntax check (`DiffEngine.validate_ast_syntax`) before any disk write. If *any* file fails, the entire operation is rejected with zero disk modifications.
+- **Atomic Rollback & Permission Preservation**: During authorized writes, original file contents and filesystem permissions (`st_mode`) are tracked in a `written_stack`. If any write fails midway:
+  - All previously modified files are restored in reverse order to their exact original contents and `st_mode` permissions.
+  - Any newly created files are unlinked.
+  - If rollback itself encounters an error, `CRITICAL: ROLLBACK_FAILED` is explicitly reported with the full list of affected files.
+
+### 5. Disposable Execution Workspace, Credential Scrubbing & Network Isolation
 When running test suites during repair workflows:
-1. **Disposable Working Copy**: Tests are executed in an isolated temporary directory (`tempfile.TemporaryDirectory`). The target source checkout is never directly touched by test runners.
-2. **Command Whitelist**: `PolicyEngine` strictly permits only `pytest` and `python -m unittest` / `python3 -m unittest`. Shell metacharacters (`&&`, `;`, `|`, `>`, `$()`) are blocked.
-3. **Loopback Proxy Redirection**: The execution subprocess environment sets `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` to `http://127.0.0.1:0` with `NO_PROXY=""`, redirecting external network access to a dead loopback port.
-4. **Execution Timeout**: Commands enforce a hard 30-second timeout per execution.
+1. **Disposable Working Copy**: Tests are executed strictly within an isolated temporary directory (`tempfile.TemporaryDirectory(prefix="repair_sandbox_")`). The target repository is never directly touched.
+2. **Subprocess Credential Scrubbing**: In `ToolRegistry._handle_run_selected_tests`, all sensitive environment variables matching `api_key`, `secret`, `token`, `password`, `auth`, `gemini`, `groq`, `aws`, etc., are stripped from the test execution subprocess.
+3. **Loopback Proxy Redirection**: Network isolation is enforced by setting `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` to `http://127.0.0.1:0` with `NO_PROXY=""`, redirecting all external socket connections to a dead loopback port.
+4. **Command Whitelist & Timeout**: `PolicyEngine` strictly permits only `pytest` and `python -m unittest` / `python3 -m unittest`. Shell metacharacters (`&&`, `;`, `|`, `>`, `$()`) are blocked. Commands enforce a hard 30-second timeout per execution.
 
-### 3. Patch Application Atomicity & Exact Rollback
-Before applying any multi-file diff:
-- Original file contents are backed up in memory.
-- Newly created files are tracked.
-- If patch application or syntax validation fails, modified files are restored and new files are unlinked.
-- If restoration fails, `ROLLBACK_FAILED` is explicitly reported with the list of affected paths.
-
-### 4. Untrusted Diagnostic Sanitization
-Stack traces and test outputs can contain adversarial prompts. `sanitize_untrusted_text()` scrubs system delimiters (e.g. `[SYSTEM INSTRUCTIONS]`) and caps traceback lengths before passing them to the LLM for diagnosis.
-
-### 5. Read-Only Target Invariant
-The target repository (e.g., `ai-evaluation`) is cryptographically verified to be immutable. All index caches (`.codebase_assistant/`), evaluation reports (`reports/`), and patches must be written to external directories.
+### 6. Untrusted Repository & Diagnostic Defanging
+Source code, docstrings, commit messages, and test failure logs may contain prompt injections or adversarial instructions (e.g. `[SYSTEM INSTRUCTIONS]`). `sanitize_untrusted_text()` scrubs delimiters and bounds diagnostics before sending context to the LLM.
 
 ---
 
@@ -327,10 +356,13 @@ The target repository (e.g., `ai-evaluation`) is cryptographically verified to b
 
 ### Running Tests Locally
 ```bash
-# Run full unit test suite:
+# Run full unit test suite (247 tests):
 pytest tests/unit -v --tb=short
 
-# Run adversarial security test suite:
+# Run MCP server integration unit suite (26 tests):
+pytest tests/unit/test_mcp_server.py -v
+
+# Run adversarial security test suite (14 tests):
 pytest tests/unit/test_repair_adversarial.py -v
 
 # Run format and lint checks:
@@ -342,5 +374,153 @@ mypy src
 codebase-assistant evaluate ../ai-evaluation --dataset data/golden_dataset.json --fail-under
 ```
 
+### Test Coverage & Quality Baselines
+- **Unit Test Suite**: 247 unit tests across ingestion, vector storage, hybrid retrieval, context assembly, Q&A engine, proposal generation, ReAct coordinator, and MCP server.
+- **Adversarial Security Suite**: 14 adversarial tests verifying prompt injection defanging, symlink escape rejection, path traversal blocking, process timeout termination, and atomic rollback failure handling.
+- **Antigravity MCP Integration Suite**: 26 integration tests covering tool discovery, fail-closed provider safety, workspace authorization, model confirmation immunity, and multi-file atomic rollback.
+- **RAG Evaluation Quality Gate**: 9 out of 9 hard and provisional quality gates passing against the 25-case golden benchmark (`data/golden_dataset.json`).
+
 ### GitHub Actions CI
 The CI workflow (`.github/workflows/ci.yml`) executes on every push and pull request across Python **3.10, 3.11, 3.12, and 3.13**, verifying formatting, typing, unit tests, adversarial security tests, and RAG quality gates on every commit.
+
+---
+
+## 🔌 Using codebase-assistant from Google Antigravity
+
+`codebase-assistant` v0.2.0 features native integration with Google Antigravity IDE using the **Model Context Protocol (MCP)**. This enables natural-language conversational pair programming directly inside Antigravity without needing to remember CLI commands, flags, or internal tool names.
+
+### 1. Integration Architecture
+
+```mermaid
+flowchart LR
+    User["Developer (Antigravity Chat)"] <--> AGY["Google Antigravity IDE"]
+    AGY <-->|"STDIO (JSON-RPC)"| MCP["codebase-assistant MCP Server"]
+    MCP --> Retrieval["HybridRetriever (FAISS + BM25)"]
+    MCP --> LLM["Grounded Gemini Q&A Engine"]
+    MCP --> Proposal["DiffEngine & Proposal Generators"]
+    MCP --> Repair["RepairWorkflowCoordinator (Disposable Sandbox)"]
+    MCP -.->|"Read-Only Access"| Repo["Target Codebase"]
+```
+
+- **Conversational Interface**: Antigravity acts as the conversational client, parsing developer intent and selecting appropriate tools.
+- **Intelligence & Execution Backend**: `codebase-assistant` runs as a local subprocess over standard input/output (STDIO), executing indexing, hybrid search, AST validation, and sandboxed test-driven repair.
+- **Clean Transport Isolation**: All JSON-RPC protocol messages flow over `stdin`/`stdout`, while application diagnostic logs route strictly to `stderr`.
+
+---
+
+### 2. Antigravity MCP Configuration (`mcp_config.json`)
+
+To register `codebase-assistant` with Antigravity, add it to your global configuration file (`~/.gemini/config/mcp_config.json`) or workspace configuration:
+
+#### Windows Configuration
+```json
+{
+  "mcpServers": {
+    "codebase-assistant": {
+      "command": "python",
+      "args": [
+        "-m",
+        "codebase_assistant.mcp_server"
+      ],
+      "env": {
+        "GEMINI_API_KEY": "${GEMINI_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+#### Linux / WSL Configuration
+```json
+{
+  "mcpServers": {
+    "codebase-assistant": {
+      "command": "/home/username/codebase_assistant_venv/bin/python",
+      "args": [
+        "-m",
+        "codebase_assistant.mcp_server"
+      ],
+      "env": {
+        "GEMINI_API_KEY": "${GEMINI_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+> [!TIP]
+> Alternatively, you can run `codebase-assistant mcp` or `codebase-assistant-mcp` as the executable command.
+
+---
+
+### 3. Antigravity Skill Installation
+
+The assistant bundles an Antigravity skill located at:
+```
+.agents/skills/codebase-assistant/SKILL.md
+```
+Antigravity automatically discovers skills placed in `.agents/skills/` within your workspace, allowing the conversational agent to understand when to invoke search, Q&A, proposal generation, or self-repair based on your prompts.
+
+---
+
+### 4. Registered Semantic Engineering Tools (11 Tools)
+
+The server exposes 11 domain-specific tools categorised into three safety tiers:
+
+| Tool Name | Tier | Parameters | Safety & Boundary Policy |
+| :--- | :--- | :--- | :--- |
+| `set_active_repository` | Workspace | `repository_path`, `cache_dir`, `writable` | Canonicalizes path via `realpath`; blocks symlink escapes; rejects protected repos from being marked writable; initializes incremental indexing and vector store. |
+| `repository_status` | Read-only | *None* | Returns active repository path, chunk count, vector count, model name, execution mode, and capability list. |
+| `search_codebase` | Read-only | `query`, `top_k=5`, `mode='hybrid'` | Hybrid vector + BM25 search via Reciprocal Rank Fusion; returns relevant code snippets and line numbers. |
+| `read_source_file` | Read-only | `file_path`, `start_line`, `end_line` | Reads line-numbered source code; strictly validates repository boundary and blocks path traversal (`..`). |
+| `ask_codebase` | Read-only | `question`, `top_k=5`, `mode='hybrid'`, `budget=8192` | Grounded Q&A backed by Gemini; returns verified line-level source citations and enforces prompt injection boundaries. |
+| `propose_code` | Proposal | `task`, `target_file`, `top_k=5`, `budget=8192` | Generates context-aware unified diff with architectural reasoning; deterministic pre-flight AST syntax check; zero disk writes. |
+| `propose_tests` | Proposal | `task`, `target_file`, `top_k=5`, `budget=8192` | Targeted unit test proposal with framework auto-detection (`pytest` vs `unittest`) and deterministic AST validation. |
+| `inspect_dependencies` | Read-only | `manifest_file=None` | Inspects dependencies (`pyproject.toml`, `requirements.txt`, `package.json`); validates path containment. |
+| `investigate_task` | Autonomous | `task`, `max_iterations=5`, `max_steps=10`, `budget=8192` | Autonomous multi-turn ReAct investigation loop with cumulative token and step budgets. |
+| `repair_code` | Autonomous | `task`, `test_command`, `max_retries=3`, `max_steps=10`, `budget=8192`, `workflow_timeout=180.0` | End-to-end self-repair executed strictly inside an isolated temporary directory (`tempfile.TemporaryDirectory`); target repository is never touched; proxy blocking and credential stripping enforced. |
+| `apply_approved_patch` | Consequential | `patch_content`, `target_workspace=None`, `auth_token=None`, `confirmation=None` | Multi-file diff parsing with all-or-nothing in-memory AST pre-flight dry-runs. Model-generated confirmation strings alone cannot authorize disk writes; unauthenticated requests return pre-flight validated `.diff` files for manual `git apply`. Programmatic disk modification requires a valid host authorization token (`auth_token`). |
+
+---
+
+### 5. Natural-Language Conversational Examples
+
+Once connected, you can talk to the agent naturally:
+
+| User Request | What Antigravity Executes |
+| :--- | :--- |
+| *"Select the `/path/to/my-repo` repository for analysis."* | Calls `set_active_repository`, indexes files, and synchronizes embeddings. |
+| *"What components make up the authentication architecture?"* | Calls `ask_codebase` to provide a grounded response with verified file citations. |
+| *"Where is the retry backoff algorithm implemented?"* | Calls `search_codebase` using hybrid vector + BM25 ranking and presents code snippets. |
+| *"Add exponential backoff with jitter to the API client."* | Calls `propose_code`, generates an AST-validated unified diff, and presents the reasoning. |
+| *"Generate unit tests for `src/auth.py` covering token expiration."* | Calls `propose_tests` with automatic framework detection (`pytest` vs `unittest`). |
+| *"Investigate why users get a 403 when updating their profiles."* | Calls `investigate_task` to run an autonomous multi-step ReAct investigation loop. |
+| *"Run the test suite, diagnose any failures, and fix the code."* | Calls `repair_code` in an isolated disposable sandbox with network proxy isolation. |
+| *"Apply the proposed patch to my development checkout."* | Calls `apply_approved_patch`; returns pre-flight validated patch and manual `git apply` instructions unless a valid host token is presented. |
+
+---
+
+### 6. Security, Authorization & Human Approval Model
+
+- **Read-Only Invariant**: Target codebases (such as `ai-evaluation`) are treated as strictly immutable knowledge sources. Attempts to register them as writable are rejected with `PermissionError`.
+- **Model Confirmation Immunity**: In conversational MCP mode, model-generated confirmation strings (e.g., `confirmation="CONFIRM_APPLY"`) can never authorize direct disk modifications. Unauthenticated requests are pre-flight validated and written to external `.diff` files for safe manual application via `git apply`.
+- **Cryptographic Authorization Tokens**: Direct programmatic disk modifications are permitted only when presenting a valid, unexpired server-issued one-time token (`auth_token`) via `issue_authorization_token()`.
+- **Exact Registered Workspaces**: All target paths are canonicalized via `os.path.realpath()`; symlink escapes, parent traversals (`..`), and absolute path escapes are blocked. Only explicitly registered writable workspaces can be modified.
+- **Multi-File Atomic Patching & Rollback**: Multi-file diffs are parsed with `DiffEngine.split_unified_diff`. All files are pre-flight dry-run in memory with AST syntax validation before any disk write. If any write fails midway, all modified files are restored in reverse order to their exact contents and filesystem permissions (`st_mode`), and new files are unlinked. Rollback errors surface explicitly with status `CRITICAL: ROLLBACK_FAILED`.
+- **Disposable Sandbox Repair Isolation**: Autonomous repair workflows execute strictly in isolated temporary directories (`tempfile.TemporaryDirectory(prefix="repair_sandbox_")`). Subprocess environments strip all sensitive credentials and API keys (`GEMINI_API_KEY`, tokens, secrets), and network access is blocked via loopback proxy redirection (`HTTP_PROXY="http://127.0.0.1:0"`).
+- **Untrusted Diagnostic Defanging**: Repository code, logs, and stack traces are treated as untrusted data and defanged with `sanitize_untrusted_text()`.
+
+---
+
+### 7. Troubleshooting Antigravity MCP Integration
+
+- **Fail-Closed Provider Safety**:
+  - By default, if live Gemini mode is enabled but provider initialization fails (missing or invalid API key), `codebase-assistant` fails closed with a `RuntimeError` rather than silently switching to mock mode.
+  - To allow fallback to mock mode, launch with `--allow-fallback`.
+  - To explicitly run offline without network access, launch with `--mock`.
+- **MCP Protocol Errors / JSON Parsing Failures**:
+  - Verify that standard logging goes to `stderr`. Never use `print()` statements on `stdout` in server code or imported utilities.
+- **Tool Timeout on First Run**:
+  - Initial repository indexing can take several seconds for large repositories. In your MCP client configuration, set timeouts to `120s` or higher.
+- **Path Resolution across Windows / WSL**:
+  - Always pass absolute or workspace-relative paths. Windows UNC paths (`\\wsl.localhost\Ubuntu\...`) and Unix paths (`/home/...`) are automatically normalized.

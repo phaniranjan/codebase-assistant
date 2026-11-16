@@ -20,6 +20,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = [
+    "mcp>=1.0.0",
+]
 ai = [
     "google-genai>=0.1.0",
     "faiss-cpu>=1.7.4",
@@ -31,6 +34,7 @@ dev = [
     "black>=23.7.0",
     "isort>=5.12.0",
     "mypy>=1.4.0",
+    "mcp>=1.0.0",
 ]
 eval = [
     "deepeval>=1.0.0",
@@ -39,6 +43,7 @@ eval = [
 
 [project.scripts]
 codebase-assistant = "codebase_assistant.cli:main"
+codebase-assistant-mcp = "codebase_assistant.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

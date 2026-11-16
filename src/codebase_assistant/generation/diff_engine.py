@@ -276,3 +276,46 @@ class DiffEngine:
         if original_content.endswith("\n") or not original_content:
             output += "\n"
         return output
+
+    @classmethod
+    def split_unified_diff(cls, unified_diff: str) -> List[Tuple[str, str]]:
+        """Split a potentially multi-file unified diff into individual (target_path, file_diff) pairs."""
+        if not unified_diff or not unified_diff.strip():
+            return []
+
+        lines = unified_diff.splitlines(keepends=True)
+        chunks: List[List[str]] = []
+        current_chunk: List[str] = []
+
+        for line in lines:
+            if line.startswith("diff --git ") or (
+                line.startswith("--- ") and any(l.startswith("+++ ") for l in current_chunk)
+            ):
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = []
+            current_chunk.append(line)
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        results: List[Tuple[str, str]] = []
+        for chunk in chunks:
+            target_path: Optional[str] = None
+            for line in chunk:
+                if line.startswith("+++ "):
+                    raw = line[4:].strip()
+                    clean = raw[2:] if raw.startswith("b/") else raw
+                    if clean and clean != "/dev/null":
+                        target_path = clean
+                        break
+                elif line.startswith("--- ") and target_path is None:
+                    raw = line[4:].strip()
+                    clean = raw[2:] if raw.startswith("a/") else raw
+                    if clean and clean != "/dev/null":
+                        target_path = clean
+
+            if target_path:
+                results.append((target_path, "".join(chunk)))
+
+        return results
